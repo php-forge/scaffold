@@ -1,9 +1,10 @@
 {
-    "name": "yii2-extensions/scaffold",
+    "name": "php-forge/scaffold",
     "type": "composer-plugin",
     "description": "Declarative multi-layer file scaffolding for PHP projects via Composer providers and a Symfony Console CLI.",
     "keywords": [
-        "yii2-extensions",
+        "php",
+        "php-forge",
         "composer-plugin",
         "scaffold",
         "scaffolding",
@@ -41,16 +42,16 @@
     },
     "autoload": {
         "psr-4": {
-            "yii\\scaffold\\": "src/"
+            "PHPForge\\Scaffold\\": "src/"
         }
     },
     "autoload-dev": {
         "psr-4": {
-            "yii\\scaffold\\tests\\": "tests/"
+            "PHPForge\\Scaffold\\Tests\\": "tests/"
         }
     },
     "extra": {
-        "class": "yii\\scaffold\\Plugin",
+        "class": "PHPForge\\Scaffold\\Plugin",
         "branch-alias": {
             "dev-main": "0.3.x-dev"
         }
@@ -66,7 +67,7 @@
         "check-dependencies": "./vendor/bin/composer-require-checker check",
         "ecs": "./vendor/bin/ecs --fix",
         "mutation": "./vendor/bin/infection --threads=4 --ignore-msi-with-no-mutations --min-msi=85 --min-covered-msi=85",
-        "mutation-static": "./vendor/bin/infection --threads=4 --ignore-msi-with-no-mutations --min-msi=100 --min-covered-msi=100 --static-analysis-tool=phpstan --static-analysis-tool-options='--memory-limit=-1'",
+        "mutation-static": "php -d memory_limit=-1 ./vendor/bin/infection --initial-tests-php-options='-d memory_limit=-1' --test-framework-extra-args='-d memory_limit=-1' --threads=4 --ignore-msi-with-no-mutations --min-msi=100 --min-covered-msi=100 --static-analysis-tool=phpstan --static-analysis-tool-options='--memory-limit=-1'",
         "rector": "./vendor/bin/rector process",
         "static": "./vendor/bin/phpstan --memory-limit=-1",
         "tests": "./vendor/bin/phpunit"

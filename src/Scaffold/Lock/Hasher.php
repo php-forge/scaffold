@@ -2,7 +2,7 @@
 
 declare(strict_types=1);
 
-namespace yii\scaffold\Scaffold\Lock;
+namespace PHPForge\Scaffold\Scaffold\Lock;
 
 use RuntimeException;
 

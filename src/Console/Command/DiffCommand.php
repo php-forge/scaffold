@@ -2,14 +2,14 @@
 
 declare(strict_types=1);
 
-namespace yii\scaffold\Console\Command;
+namespace PHPForge\Scaffold\Console\Command;
 
+use PHPForge\Scaffold\Console\{SymfonyOutputWriter, VendorDirResolver};
+use PHPForge\Scaffold\Services\DiffService;
 use Symfony\Component\Console\Attribute\AsCommand;
 use Symfony\Component\Console\Command\Command;
 use Symfony\Component\Console\Input\{InputArgument, InputInterface};
 use Symfony\Component\Console\Output\OutputInterface;
-use yii\scaffold\Console\{SymfonyOutputWriter, VendorDirResolver};
-use yii\scaffold\Services\DiffService;
 
 /**
  * Shows a git-style unified diff between the provider stub and the current on-disk file.

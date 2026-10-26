@@ -2,14 +2,14 @@
 
 declare(strict_types=1);
 
-namespace yii\scaffold\Services;
+namespace PHPForge\Scaffold\Services;
 
+use PHPForge\Scaffold\Console\{ExitCode, OutputWriter};
+use PHPForge\Scaffold\Scaffold\Lock\{Hasher, LockFile};
+use PHPForge\Scaffold\Scaffold\PathResolver;
+use PHPForge\Scaffold\Security\PathValidator;
 use RuntimeException;
 use Throwable;
-use yii\scaffold\Console\{ExitCode, OutputWriter};
-use yii\scaffold\Scaffold\Lock\{Hasher, LockFile};
-use yii\scaffold\Scaffold\PathResolver;
-use yii\scaffold\Security\PathValidator;
 
 use function max;
 use function sprintf;

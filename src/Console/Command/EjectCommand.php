@@ -2,14 +2,14 @@
 
 declare(strict_types=1);
 
-namespace yii\scaffold\Console\Command;
+namespace PHPForge\Scaffold\Console\Command;
 
+use PHPForge\Scaffold\Console\SymfonyOutputWriter;
+use PHPForge\Scaffold\Services\EjectService;
 use Symfony\Component\Console\Attribute\AsCommand;
 use Symfony\Component\Console\Command\Command;
 use Symfony\Component\Console\Input\{InputArgument, InputInterface, InputOption};
 use Symfony\Component\Console\Output\OutputInterface;
-use yii\scaffold\Console\SymfonyOutputWriter;
-use yii\scaffold\Services\EjectService;
 
 /**
  * Removes a file entry from `scaffold-lock.json` without deleting the file from disk.

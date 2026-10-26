@@ -2,7 +2,7 @@
 
 declare(strict_types=1);
 
-namespace yii\scaffold\Console\Command;
+namespace PHPForge\Scaffold\Console\Command;
 
 use Symfony\Component\Console\Command\Command;
 use Symfony\Component\Console\Output\OutputInterface;
@@ -13,7 +13,8 @@ use Symfony\Component\Console\Output\OutputInterface;
  *
  * Centralizes the `getcwd()` fail-fast check so every command reports a single, consistent diagnostic when the CWD
  * becomes unreadable (for example, after the parent directory is removed) instead of silently propagating an
- * empty project root into {@see \yii\scaffold\Scaffold\Lock\LockFile} or {@see \yii\scaffold\Scaffold\PathResolver}.
+ * empty project root into {@see \PHPForge\Scaffold\Scaffold\Lock\LockFile} or
+ * {@see \PHPForge\Scaffold\Scaffold\PathResolver}.
  */
 abstract class AbstractScaffoldCommand extends Command
 {

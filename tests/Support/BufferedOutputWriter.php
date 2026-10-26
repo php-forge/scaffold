@@ -1,0 +1,42 @@
+<?php
+
+declare(strict_types=1);
+
+namespace PHPForge\Scaffold\Tests\Support;
+
+use PHPForge\Scaffold\Console\OutputWriter;
+
+/**
+ * In-memory {@see OutputWriter} implementation that buffers stdout / stderr writes into public strings for assertion.
+ */
+final class BufferedOutputWriter implements OutputWriter
+{
+    /**
+     * Buffers all messages written to stderr.
+     */
+    public string $stderrBuffer = '';
+    /**
+     * Buffers all messages written to stdout.
+     */
+    public string $stdoutBuffer = '';
+
+    /**
+     * Writes a message to stderr followed by a single trailing `PHP_EOL`.
+     *
+     * @param string $message Message to write.
+     */
+    public function writeStderr(string $message): void
+    {
+        $this->stderrBuffer .= $message . PHP_EOL;
+    }
+
+    /**
+     * Writes a message to stdout followed by a single trailing `PHP_EOL`.
+     *
+     * @param string $message Message to write.
+     */
+    public function writeStdout(string $message): void
+    {
+        $this->stdoutBuffer .= $message . PHP_EOL;
+    }
+}

@@ -2,14 +2,14 @@
 
 declare(strict_types=1);
 
-namespace yii\scaffold\Scaffold\Modes;
+namespace PHPForge\Scaffold\Scaffold\Modes;
 
+use PHPForge\Scaffold\Manifest\FileMapping;
+use PHPForge\Scaffold\Scaffold\Lock\Hasher;
+use PHPForge\Scaffold\Scaffold\PathResolver;
 use RuntimeException;
 use SebastianBergmann\Diff\Differ;
 use SebastianBergmann\Diff\Output\DiffOnlyOutputBuilder;
-use yii\scaffold\Manifest\FileMapping;
-use yii\scaffold\Scaffold\Lock\Hasher;
-use yii\scaffold\Scaffold\PathResolver;
 
 use function array_column;
 use function array_count_values;

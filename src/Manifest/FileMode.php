@@ -2,7 +2,7 @@
 
 declare(strict_types=1);
 
-namespace yii\scaffold\Manifest;
+namespace PHPForge\Scaffold\Manifest;
 
 /**
  * Scaffold file write modes used in provider manifests and surfaced on {@see FileMapping}.

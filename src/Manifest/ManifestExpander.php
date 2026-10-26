@@ -2,7 +2,7 @@
 
 declare(strict_types=1);
 
-namespace yii\scaffold\Manifest;
+namespace PHPForge\Scaffold\Manifest;
 
 use FilesystemIterator;
 use RecursiveCallbackFilterIterator;

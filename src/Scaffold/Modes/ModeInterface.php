@@ -2,11 +2,11 @@
 
 declare(strict_types=1);
 
-namespace yii\scaffold\Scaffold\Modes;
+namespace PHPForge\Scaffold\Scaffold\Modes;
 
+use PHPForge\Scaffold\Manifest\FileMapping;
+use PHPForge\Scaffold\Scaffold\Lock\Hasher;
 use RuntimeException;
-use yii\scaffold\Manifest\FileMapping;
-use yii\scaffold\Scaffold\Lock\Hasher;
 
 /**
  * Contract for all scaffold file-application strategies.

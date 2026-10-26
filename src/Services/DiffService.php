@@ -2,15 +2,15 @@
 
 declare(strict_types=1);
 
-namespace yii\scaffold\Services;
+namespace PHPForge\Scaffold\Services;
 
+use PHPForge\Scaffold\Console\{DiffColorizer, ExitCode, OutputWriter};
+use PHPForge\Scaffold\Scaffold\Lock\LockFile;
+use PHPForge\Scaffold\Scaffold\PathResolver;
+use PHPForge\Scaffold\Security\PathValidator;
 use RuntimeException;
 use SebastianBergmann\Diff\Differ;
 use SebastianBergmann\Diff\Output\StrictUnifiedDiffOutputBuilder;
-use yii\scaffold\Console\{DiffColorizer, ExitCode, OutputWriter};
-use yii\scaffold\Scaffold\Lock\LockFile;
-use yii\scaffold\Scaffold\PathResolver;
-use yii\scaffold\Security\PathValidator;
 
 use function is_file;
 use function preg_replace;

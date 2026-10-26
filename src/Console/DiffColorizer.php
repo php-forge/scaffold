@@ -2,7 +2,7 @@
 
 declare(strict_types=1);
 
-namespace yii\scaffold\Console;
+namespace PHPForge\Scaffold\Console;
 
 use function explode;
 use function implode;
@@ -18,7 +18,7 @@ use function str_starts_with;
  *
  * Usage example:
  * ```php
- * $colorized = (new \yii\scaffold\Console\DiffColorizer())->colorize($unifiedDiff);
+ * $colorized = (new \PHPForge\Scaffold\Console\DiffColorizer())->colorize($unifiedDiff);
  * ```
  */
 final class DiffColorizer
@@ -30,7 +30,7 @@ final class DiffColorizer
     private const string RESET = "\e[0m";
 
     /**
-     * Colorizes a unified diff produced by {@see \yii\scaffold\Services\DiffService::buildDiff()}.
+     * Colorizes a unified diff produced by {@see \PHPForge\Scaffold\Services\DiffService::buildDiff()}.
      *
      * @param string $diff Unified diff whose first two lines are the `---`/`+++` file headers.
      *

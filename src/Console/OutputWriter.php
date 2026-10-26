@@ -2,7 +2,7 @@
 
 declare(strict_types=1);
 
-namespace yii\scaffold\Console;
+namespace PHPForge\Scaffold\Console;
 
 /**
  * Abstracts `stdout` / `stderr` writes so scaffold service implementations can run unchanged under console controllers,

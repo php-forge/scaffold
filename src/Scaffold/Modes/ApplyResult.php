@@ -2,7 +2,7 @@
 
 declare(strict_types=1);
 
-namespace yii\scaffold\Scaffold\Modes;
+namespace PHPForge\Scaffold\Scaffold\Modes;
 
 /**
  * Represents the outcome of applying a single scaffold file mapping.

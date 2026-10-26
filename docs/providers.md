@@ -23,25 +23,22 @@ Declare under `extra.scaffold` in the provider's `composer.json`:
 
 ```json
 {
-    "name": "yii2-extensions/app-backend",
-    "type": "yii2-scaffold",
+    "name": "php-forge/baseline",
+    "type": "library",
     "extra": {
         "scaffold": {
             "copy": [
-                "src",
-                "config",
-                "migrations",
-                "public",
-                "resources",
-                "yii",
-                ".env.dist",
-                ".gitignore"
+                {"from": "metadata/.editorconfig", "to": ".editorconfig"},
+                {"from": "metadata/gitattributes", "to": ".gitattributes"},
+                {"from": "metadata/.gitignore", "to": ".gitignore"},
+                {"from": "metadata/.styleci.yml", "to": ".styleci.yml"},
+                {"from": "metadata/composer-require-checker.json", "to": "composer-require-checker.json"},
+                {"from": "metadata/.github/linters", "to": ".github/linters"}
             ],
             "modes": {
-                "config/*.php": "preserve",
-                "public/assets/.gitkeep": "preserve",
-                ".env.dist": "preserve",
-                ".gitignore": "append"
+                ".editorconfig": "append",
+                ".gitignore": "append",
+                "composer-require-checker.json": "preserve"
             }
         }
     }
@@ -54,8 +51,8 @@ For larger providers, point to a `scaffold.json` file next to `composer.json`:
 
 ```json
 {
-    "name": "yii2-extensions/app-backend",
-    "type": "yii2-scaffold",
+    "name": "php-forge/coding-standard",
+    "type": "library",
     "extra": {
         "scaffold": {
             "manifest": "scaffold.json"
@@ -69,19 +66,12 @@ For larger providers, point to a `scaffold.json` file next to `composer.json`:
 ```json
 {
     "copy": [
-        "src",
-        "config",
-        "migrations",
-        "public",
-        "resources",
-        "yii",
-        ".env.dist"
+        {"from": "src/config/ecs.php", "to": "ecs.php"},
+        {"from": "src/config/rector.php", "to": "rector.php"}
     ],
-    "exclude": ["config/test-local.php"],
     "modes": {
-        "config/*.php": "preserve",
-        "public/assets/.gitkeep": "preserve",
-        ".env.dist": "preserve"
+        "ecs.php": "preserve",
+        "rector.php": "preserve"
     }
 }
 ```
@@ -134,11 +124,11 @@ can list the exact path as an explicit file entry in `copy`; explicit file entri
 
 ## Provider layout
 
-Because `copy` walks the provider tree directly, providers look like real Yii2 apps. There is no `stubs/` wrapper and
-no per-file declaration:
+Because `copy` walks the provider tree directly, providers look like real Yii2 apps. There is no `stubs/` wrapper and no
+per-file declaration:
 
 ```text
-yii2-extensions/app-backend/
+acme/app-backend/
 ├── composer.json          # declares extra.scaffold or extra.scaffold.manifest
 ├── scaffold.json          # optional external manifest
 ├── src/                   # copied verbatim into the consumer's src/
@@ -161,8 +151,8 @@ before any consumer depends on it.
 
 The plugin validates every entry before writing:
 
-- **Package allowlist**: the provider must appear in `allowed-packages`. Unknown providers cause an error and no file
-  is written.
+- **Package allowlist**: the provider must appear in `allowed-packages`. Unknown providers cause an error and no file is
+  written.
 - **Path traversal rejection**: entries in `copy` and `exclude` must be relative and must not contain `..` segments.
   Absolute paths and Windows drive letters are rejected.
 - **File existence**: every path listed in `copy` must exist on disk at expansion time; missing entries fail the run

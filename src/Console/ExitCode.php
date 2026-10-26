@@ -2,7 +2,7 @@
 
 declare(strict_types=1);
 
-namespace yii\scaffold\Console;
+namespace PHPForge\Scaffold\Console;
 
 /**
  * Standardized exit codes returned by scaffold services.

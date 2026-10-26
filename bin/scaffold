@@ -4,14 +4,14 @@
 declare(strict_types=1);
 
 /**
- * Standalone entry point for the `yii2-extensions/scaffold` Symfony Console application.
+ * Standalone entry point for the `php-forge/scaffold` Symfony Console application.
  *
  * Resolves its Composer autoloader whether invoked from the plugin's own `bin/scaffold` (development) or from a
- * consumer's `vendor/bin/scaffold` (production). Any PHP project that requires `yii2-extensions/scaffold` can run
+ * consumer's `vendor/bin/scaffold` (production). Any PHP project that requires `php-forge/scaffold` can run
  * this binary without needing a framework.
  */
 
-use yii\scaffold\Console\Application;
+use PHPForge\Scaffold\Console\Application;
 
 foreach (
     [

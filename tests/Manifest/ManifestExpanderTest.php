@@ -1,0 +1,589 @@
+<?php
+
+declare(strict_types=1);
+
+namespace PHPForge\Scaffold\Tests\Manifest;
+
+use PHPForge\Scaffold\Manifest\{FileMapping, FileMode, ManifestExpander};
+use PHPForge\Scaffold\Tests\Support\TempDirectoryTrait;
+use PHPUnit\Framework\Attributes\Group;
+use PHPUnit\Framework\TestCase;
+use RuntimeException;
+
+use function chmod;
+use function file_put_contents;
+use function function_exists;
+use function posix_geteuid;
+
+/**
+ * Unit tests for {@see ManifestExpander} covering directory walking, exclusions, and mode resolution.
+ */
+#[Group('scaffold')]
+#[Group('manifest')]
+final class ManifestExpanderTest extends TestCase
+{
+    use TempDirectoryTrait;
+
+    public function testExpandAppliesDefaultExcludesDuringDirectoryWalk(): void
+    {
+        $this->seedFile('src/controllers/SiteController.php');
+        $this->seedFile('src/tests/SomeTest.php');
+        $this->seedFile('composer.json');
+        $this->seedFile('runtime/cache/x.log');
+
+        $mappings = $this->expand(
+            [
+                'copy' => ['.'],
+                'exclude' => [],
+                'modes' => [],
+            ],
+        );
+
+        self::assertContains(
+            'src/controllers/SiteController.php',
+            $this->destinations($mappings),
+            "Walking '.' must emit the controller file as a destination.",
+        );
+        self::assertNotContains(
+            'composer.json',
+            $this->destinations($mappings),
+            "Default excludes must hide 'composer.json' when '.' is walked.",
+        );
+        self::assertNotContains(
+            'runtime/cache/x.log',
+            $this->destinations($mappings),
+            "Default excludes must hide 'runtime/**' contents when the directory is walked.",
+        );
+    }
+
+    public function testExpandAppliesFromToRemapForDirectoryEntry(): void
+    {
+        $this->seedFile('metadata/.github/linters/actionlint.yml');
+        $this->seedFile('metadata/.github/linters/.markdown-lint.yml');
+
+        $mappings = $this->expand(
+            [
+                'copy' => [['from' => 'metadata/.github', 'to' => '.github']],
+                'exclude' => [],
+                'modes' => [],
+            ],
+        );
+
+        $pairs = array_map(
+            static fn(FileMapping $mapping): array => [
+                'source' => $mapping->source,
+                'destination' => $mapping->destination,
+            ],
+            $mappings,
+        );
+
+        self::assertSame(
+            [
+                ['source' => 'metadata/.github/linters/.markdown-lint.yml', 'destination' => '.github/linters/.markdown-lint.yml'],
+                ['source' => 'metadata/.github/linters/actionlint.yml', 'destination' => '.github/linters/actionlint.yml'],
+            ],
+            $pairs,
+            "Directory '{from, to}' entries must rewrite the source prefix to the destination prefix on each walked file.",
+        );
+    }
+
+    public function testExpandAppliesFromToRemapForFileEntry(): void
+    {
+        $this->seedFile('metadata/.editorconfig');
+
+        $mappings = $this->expand(
+            [
+                'copy' => [['from' => 'metadata/.editorconfig', 'to' => '.editorconfig']],
+                'exclude' => [],
+                'modes' => [],
+            ],
+        );
+
+        $pairs = array_map(
+            static fn(FileMapping $mapping): array => [
+                'source' => $mapping->source,
+                'destination' => $mapping->destination,
+            ],
+            $mappings,
+        );
+
+        self::assertSame(
+            [['source' => 'metadata/.editorconfig', 'destination' => '.editorconfig']],
+            $pairs,
+            "File '{from, to}' entries must remap the destination while preserving the provider-relative source.",
+        );
+    }
+
+    public function testExpandAppliesUserExcludesOnTopOfDefaults(): void
+    {
+        $this->seedFile('src/controllers/SiteController.php');
+        $this->seedFile('src/controllers/Disabled.php');
+
+        $mappings = $this->expand(
+            [
+                'copy' => ['src'],
+                'exclude' => ['src/controllers/Disabled.php'],
+                'modes' => [],
+            ],
+        );
+
+        self::assertSame(
+            ['src/controllers/SiteController.php'],
+            $this->destinations($mappings),
+            "User-declared 'exclude[]' patterns must filter walked paths.",
+        );
+    }
+
+    public function testExpandAttributesEveryMappingToTheProviderName(): void
+    {
+        $this->seedFile('src/Foo.php');
+
+        $mappings = $this->expand(
+            [
+                'copy' => ['src'],
+                'exclude' => [],
+                'modes' => [],
+            ],
+            providerName: 'pkg/example',
+        );
+
+        self::assertNotEmpty(
+            $mappings,
+            'Seed fixture must produce at least one mapping.',
+        );
+
+        foreach ($mappings as $mapping) {
+            self::assertSame(
+                'pkg/example',
+                $mapping->providerName,
+                'Every FileMapping must carry the provider name for lock-file provenance.',
+            );
+        }
+    }
+
+    public function testExpandContinuesToNextCopyEntryAfterDeduplicatingRepeatedFile(): void
+    {
+        $this->seedFile('yii');
+        $this->seedFile('other.txt');
+
+        $mappings = $this->expand(
+            [
+                'copy' => ['yii', 'yii', 'other.txt'],
+                'exclude' => [],
+                'modes' => [],
+            ],
+        );
+
+        self::assertContains(
+            'other.txt',
+            $this->destinations($mappings),
+            "After a duplicate file entry hits the dedup branch, the outer loop must 'continue' to process subsequent entries.",
+        );
+    }
+
+    public function testExpandContinuesToNextCopyEntryAfterWalkingDirectory(): void
+    {
+        $this->seedFile('dir1/a.txt');
+        $this->seedFile('dir2/b.txt');
+
+        $mappings = $this->expand(
+            [
+                'copy' => ['dir1', 'dir2'],
+                'exclude' => [],
+                'modes' => [],
+            ],
+        );
+
+        self::assertContains(
+            'dir2/b.txt',
+            $this->destinations($mappings),
+            "After walking the first directory, the outer loop must 'continue' so the next entry is walked too.",
+        );
+    }
+
+    public function testExpandDedupContinueDoesNotBreakDirectoryWalk(): void
+    {
+        // Pre-adding 'a.php' as an explicit entry seeds the dedup map so the walk must 'continue' onto 'b.php' / 'c.php'.
+        $this->seedFile('a.php');
+        $this->seedFile('b.php');
+        $this->seedFile('c.php');
+
+        $mappings = $this->expand(
+            [
+                'copy' => ['a.php', '.'],
+                'exclude' => [],
+                'modes' => [],
+            ],
+        );
+        $destinations = $this->destinations($mappings);
+
+        self::assertContains(
+            'b.php',
+            $destinations,
+            "After 'a.php' hits the dedup branch, the walk must 'continue' so 'b.php' still lands in the output.",
+        );
+        self::assertContains(
+            'c.php',
+            $destinations,
+            "After 'a.php' hits the dedup branch, the walk must 'continue' so 'c.php' still lands in the output.",
+        );
+    }
+
+    public function testExpandDeduplicatesWhenFileIsReachableByBothFileAndDirectoryEntries(): void
+    {
+        $this->seedFile('yii');
+
+        $mappings = $this->expand(
+            [
+                'copy' => ['yii', '.'],
+                'exclude' => [],
+                'modes' => [],
+            ],
+        );
+
+        $destinations = $this->destinations($mappings);
+
+        self::assertSame(
+            1,
+            array_count_values($destinations)['yii'] ?? 0,
+            'A destination reachable from both an explicit file entry and a directory walk must appear only once.',
+        );
+    }
+
+    public function testExpandEmitsEntriesForEachFileInsideCopyDirectory(): void
+    {
+        $this->seedFile('src/controllers/SiteController.php');
+        $this->seedFile('src/models/User.php');
+
+        $mappings = $this->expand(
+            [
+                'copy' => ['src'],
+                'exclude' => [],
+                'modes' => [],
+            ],
+        );
+
+        self::assertSame(
+            ['src/controllers/SiteController.php', 'src/models/User.php'],
+            $this->destinations($mappings),
+            "Walking 'src' must emit every file beneath it as a destination.",
+        );
+    }
+
+    public function testExpandNormalisesTrailingSeparatorInCopyDirectoryEntry(): void
+    {
+        $this->seedFile('src/controllers/SiteController.php');
+
+        $mappings = $this->expand(
+            [
+                'copy' => ['src/'],
+                'exclude' => [],
+                'modes' => [],
+            ],
+        );
+
+        self::assertSame(
+            ['src/controllers/SiteController.php'],
+            $this->destinations($mappings),
+            "A trailing '/' on a 'copy' directory entry must produce the same destinations as the un-slashed form.",
+        );
+    }
+
+    public function testExpandPrunesDefaultExcludedDirectoriesWithoutDescendingIntoThem(): void
+    {
+        // Descent-pruning proof requires POSIX mode bits to be honoured: 'chmod 0' on 'vendor' must deny 'opendir()'
+        // so the walk only completes when the recursive filter rejects descent BEFORE reading the subtree.
+        $this->skipUnlessChmodDeniesDirectoryReads();
+        $this->seedFile('src/main.php');
+        $this->seedFile('vendor/pkg/bogus.php');
+
+        chmod("{$this->tempDir}/vendor", 0);
+
+        try {
+            $mappings = $this->expand(
+                [
+                    'copy' => ['.'],
+                    'exclude' => [],
+                    'modes' => [],
+                ],
+            );
+        } finally {
+            chmod("{$this->tempDir}/vendor", 0o755);
+        }
+
+        self::assertSame(
+            ['src/main.php'],
+            $this->destinations($mappings),
+            "Default-excluded directories must be pruned BEFORE descent; otherwise an unreadable 'vendor/' would derail it.",
+        );
+    }
+
+    public function testExpandPrunesUserExcludedDirectoriesWithoutDescendingIntoThem(): void
+    {
+        // Requires POSIX mode bits: Windows and root ignore 'chmod 0', which would reduce the test to file-level exclusion.
+        $this->skipUnlessChmodDeniesDirectoryReads();
+        $this->seedFile('src/main.php');
+        $this->seedFile('secrets/keys.txt');
+
+        chmod("{$this->tempDir}/secrets", 0);
+
+        try {
+            $mappings = $this->expand(
+                [
+                    'copy' => ['.'],
+                    'exclude' => ['secrets/**'],
+                    'modes' => [],
+                ],
+            );
+        } finally {
+            chmod("{$this->tempDir}/secrets", 0o755);
+        }
+
+        self::assertSame(
+            ['src/main.php'],
+            $this->destinations($mappings),
+            "User-exclude patterns 'X/**' must prune directories BEFORE descent; otherwise unreadable subtrees derail the walk.",
+        );
+    }
+
+    public function testExpandResolvesExactMatchInModesAndShortCircuitsGlobLoop(): void
+    {
+        // Declaration order is deliberate: the glob is declared BEFORE the exact path to exercise the 'isset' short-circuit.
+        $this->seedFile('config/params.php');
+
+        $mappings = $this->expand(
+            [
+                'copy' => ['config/params.php'],
+                'exclude' => [],
+                'modes' => [
+                    'config/*.php' => FileMode::Preserve,
+                    'config/params.php' => FileMode::Replace,
+                ],
+            ],
+        );
+
+        self::assertSame(
+            FileMode::Replace,
+            $mappings[0]->mode ?? null,
+            "Exact path match must win over a preceding-but-also-matching glob via the 'isset' early return.",
+        );
+    }
+
+    public function testExpandResolvesModesByExactPathThenByGlobThenDefaultsToReplace(): void
+    {
+        $this->seedFile('config/web.php');
+        $this->seedFile('config/params.php');
+        $this->seedFile('src/controllers/SiteController.php');
+
+        $mappings = $this->expand(
+            [
+                'copy' => [
+                    'config',
+                    'src',
+                ],
+                'exclude' => [],
+                'modes' => [
+                    'config/params.php' => FileMode::Preserve,
+                    'config/*.php' => FileMode::Append,
+                ],
+            ],
+        );
+
+        $modesByDestination = [];
+
+        foreach ($mappings as $mapping) {
+            $modesByDestination[$mapping->destination] = $mapping->mode;
+        }
+
+        self::assertSame(
+            FileMode::Preserve,
+            $modesByDestination['config/params.php'] ?? null,
+            'Exact path match must win over a glob pattern that would also match.',
+        );
+        self::assertSame(
+            FileMode::Append,
+            $modesByDestination['config/web.php'] ?? null,
+            "Glob 'config/*.php' must resolve 'config/web.php' after the exact-path lookup misses.",
+        );
+        self::assertSame(
+            FileMode::Replace,
+            $modesByDestination['src/controllers/SiteController.php'] ?? null,
+            "A destination with no match in 'modes{}' must default to 'FileMode::Replace'.",
+        );
+    }
+
+    public function testExpandReturnsWalkResultsInAlphabeticallySortedOrder(): void
+    {
+        // Seed in reverse-alphabetic order so the dirent order cannot accidentally match the expected sorted output.
+        $this->seedFile('zzz.php');
+        $this->seedFile('mmm.php');
+        $this->seedFile('aaa.php');
+
+        $mappings = $this->expand(
+            [
+                'copy' => ['.'],
+                'exclude' => [],
+                'modes' => [],
+            ],
+        );
+
+        $rawOrder = array_map(static fn(FileMapping $mapping): string => $mapping->destination, $mappings);
+
+        self::assertSame(
+            ['aaa.php', 'mmm.php', 'zzz.php'],
+            $rawOrder,
+            "Walk results must be sorted alphabetically so 'scaffold-lock.json' stays deterministic across filesystems.",
+        );
+    }
+
+    public function testExpandSkipsExcludedFilesAndContinuesToRemainingEntries(): void
+    {
+        $this->seedFile('src/drop.txt');
+        $this->seedFile('src/keep.txt');
+
+        $mappings = $this->expand(
+            [
+                'copy' => ['src'],
+                'exclude' => ['src/drop.txt'],
+                'modes' => [],
+            ],
+        );
+
+        self::assertSame(
+            ['src/keep.txt'],
+            $this->destinations($mappings),
+            "After an excluded file hits the skip branch, the walk must 'continue' so remaining files still process.",
+        );
+    }
+
+    public function testExpandThrowsWhenCopyEntryDoesNotExistOnDisk(): void
+    {
+        $this->expectException(RuntimeException::class);
+        $this->expectExceptionMessage('does not exist');
+
+        $this->expand(
+            [
+                'copy' => ['missing-dir'],
+                'exclude' => [],
+                'modes' => [],
+            ],
+        );
+    }
+
+    public function testExpandTreatsExplicitFileInCopyAsPassthroughBypassingDefaultExcludes(): void
+    {
+        $this->seedFile('runtime/.gitignore');
+
+        $mappings = $this->expand(
+            [
+                'copy' => ['runtime/.gitignore'],
+                'exclude' => [],
+                'modes' => [],
+            ],
+        );
+
+        self::assertSame(
+            ['runtime/.gitignore'],
+            $this->destinations($mappings),
+            'An explicit file entry under a default-excluded directory must still ship; explicit entries bypass excludes.',
+        );
+    }
+
+    public function testExpandUserExcludeGlobMatchesMultipleFiles(): void
+    {
+        $this->seedFile('src/a.txt');
+        $this->seedFile('src/b.txt');
+        $this->seedFile('src/c.php');
+
+        $mappings = $this->expand(
+            [
+                'copy' => ['src'],
+                'exclude' => ['src/*.txt'],
+                'modes' => [],
+            ],
+        );
+
+        self::assertSame(
+            ['src/c.php'],
+            $this->destinations($mappings),
+            'User exclude globs must filter by pattern, not just literal path.',
+        );
+    }
+
+    protected function setUp(): void
+    {
+        $this->setUpTempDirectory();
+    }
+
+    protected function tearDown(): void
+    {
+        $this->tearDownTempDirectory();
+    }
+
+    /**
+     * Extracts the destination paths from a list of file mappings.
+     *
+     * @param list<FileMapping> $mappings
+     *
+     * @return list<string>
+     */
+    private function destinations(array $mappings): array
+    {
+        $destinations = array_map(static fn(FileMapping $mapping): string => $mapping->destination, $mappings);
+
+        sort($destinations);
+
+        return $destinations;
+    }
+
+    /**
+     * Invokes {@see ManifestExpander::expand()} against the test's temp directory.
+     *
+     * Accepts the legacy string form (`'copy' => ['src']`) and normalises it to the typed `{from, to}` form expected
+     * by the expander, so existing tests do not need to be rewritten when only a single path is being declared.
+     *
+     * @param array{copy: list<string|array{from: string, to: string}>, exclude: list<string>, modes: array<string, FileMode>} $manifest
+     *
+     * @return list<FileMapping>
+     */
+    private function expand(array $manifest, string $providerName = 'pkg/test'): array
+    {
+        $manifest['copy'] = array_map(
+            static fn(mixed $entry): array => is_string($entry) ? ['from' => $entry, 'to' => $entry] : $entry,
+            $manifest['copy'],
+        );
+
+        /** @var array{copy: list<array{from: string, to: string}>, exclude: list<string>, modes: array<string, FileMode>} $manifest */
+        return (new ManifestExpander())->expand($manifest, $this->tempDir, $providerName);
+    }
+
+    /**
+     * Writes an empty file at `$relative` under the temp directory, creating intermediate directories as needed.
+     */
+    private function seedFile(string $relative): void
+    {
+        $absolute = "{$this->tempDir}/{$relative}";
+
+        $this->ensureTestDirectory(dirname($absolute));
+
+        file_put_contents($absolute, '');
+    }
+
+    /**
+     * Skips the current test when the platform or user cannot make `chmod(dir, 0)` deny directory reads.
+     *
+     * Windows ignores POSIX mode bits entirely, and the root user bypasses them, so a `chmod 0` guard degrades to a
+     * no-op in either environment; the tests that rely on it for descent-prevention proof cannot produce a signal
+     * there and must be skipped rather than silently pass.
+     */
+    private function skipUnlessChmodDeniesDirectoryReads(): void
+    {
+        if (PHP_OS_FAMILY === 'Windows') {
+            self::markTestSkipped('chmod mode bits are not enforced on Windows.');
+        }
+
+        if (function_exists('posix_geteuid') && posix_geteuid() === 0) {
+            self::markTestSkipped('Running as root bypasses chmod mode bits.');
+        }
+    }
+}

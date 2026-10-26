@@ -1,32 +1,31 @@
 <!-- markdownlint-disable MD041 -->
 <p align="center">
-    <picture>
-        <source media="(prefers-color-scheme: dark)" srcset="https://www.yiiframework.com/image/design/logo/yii3_full_for_dark.svg">
-        <source media="(prefers-color-scheme: light)" srcset="https://www.yiiframework.com/image/design/logo/yii3_full_for_light.svg">
-        <img src="https://www.yiiframework.com/image/design/logo/yii3_full_for_light.svg" alt="Yii Framework" width="80%">
-    </picture>
+    <a href="https://github.com/php-forge/scaffold" target="_blank">
+      <img src="https://avatars.githubusercontent.com/u/103309199?s=400&u=ca3561c692f53ed7eb290d3bb226a2828741606f&v=4" width="30%" alt="PHP Forge">
+    </a>
     <h1 align="center">Scaffold</h1>
     <br>
 </p>
 <!-- markdownlint-enable MD041 -->
 
 <p align="center">
-    <a href="https://github.com/yii2-extensions/scaffold/actions/workflows/build.yml" target="_blank">
-        <img src="https://img.shields.io/github/actions/workflow/status/yii2-extensions/scaffold/build.yml?style=for-the-badge&logo=github&label=Build" alt="Build">
+    <a href="https://github.com/php-forge/scaffold/actions/workflows/build.yml" target="_blank">
+        <img src="https://img.shields.io/github/actions/workflow/status/php-forge/scaffold/build.yml?style=for-the-badge&label=PHPUnit&logo=github" alt="PHPUnit">
     </a>
-    <a href="https://github.com/yii2-extensions/scaffold/actions/workflows/mutation.yml" target="_blank">
-        <img src="https://img.shields.io/github/actions/workflow/status/yii2-extensions/scaffold/mutation.yml?style=for-the-badge&logo=github&label=Mutation" alt="Mutation">
+    <a href="https://dashboard.stryker-mutator.io/reports/github.com/php-forge/scaffold/main" target="_blank">
+        <img src="https://img.shields.io/endpoint?style=for-the-badge&url=https%3A%2F%2Fbadge-api.stryker-mutator.io%2Fgithub.com%2Fphp-forge%2Fscaffold%2Fmain" alt="Mutation Testing">
     </a>
-    <a href="https://github.com/yii2-extensions/scaffold/actions/workflows/static.yml" target="_blank">
-        <img src="https://img.shields.io/github/actions/workflow/status/yii2-extensions/scaffold/static.yml?style=for-the-badge&logo=github&label=PHPStan" alt="PHPStan">
+    <a href="https://github.com/php-forge/scaffold/actions/workflows/static.yml" target="_blank">
+        <img src="https://img.shields.io/github/actions/workflow/status/php-forge/scaffold/static.yml?style=for-the-badge&label=PHPStan&logo=github" alt="PHPStan">
     </a>
-    <a href="https://github.com/yii2-extensions/scaffold/actions/workflows/security.yml" target="_blank">
-        <img src="https://img.shields.io/github/actions/workflow/status/yii2-extensions/scaffold/security.yml?style=for-the-badge&label=Security&logo=github" alt="Security">
+    <a href="https://github.com/php-forge/scaffold/actions/workflows/security.yml" target="_blank">
+        <img src="https://img.shields.io/github/actions/workflow/status/php-forge/scaffold/security.yml?style=for-the-badge&label=Security&logo=github" alt="Security">
     </a>
 </p>
 
 <p align="center">
-    <strong>Declarative multi-layer file scaffolding for PHP projects<br>via Composer providers and a Console CLI</strong>
+    <strong>Declarative multi-layer file scaffolding for PHP projects</strong><br>
+    <em>Distribute project files through Composer providers and manage them with a standalone Console CLI.</em>
 </p>
 
 ## Features
@@ -39,18 +38,19 @@
 ## Installation
 
 ```bash
-composer require yii2-extensions/scaffold:^0.1
-composer config allow-plugins.yii2-extensions/scaffold true
+composer config allow-plugins.php-forge/scaffold true
+composer require php-forge/scaffold:^0.3
 ```
 
-Declare the providers that are permitted to write files into your project:
+Install your scaffold providers, then declare which are permitted to write files into your project:
 
 ```json
 {
     "extra": {
         "scaffold": {
             "allowed-packages": [
-                "yii2-extensions/app-base"
+                "php-forge/baseline",
+                "php-forge/coding-standard"
             ]
         }
     }
@@ -67,7 +67,7 @@ To opt out of auto-trigger and manage updates manually via `vendor/bin/scaffold`
     "extra": {
         "scaffold": {
             "auto": false,
-            "allowed-packages": ["yii2-extensions/app-base"]
+            "allowed-packages": ["php-forge/baseline", "php-forge/coding-standard"]
         }
     }
 }
@@ -75,23 +75,23 @@ To opt out of auto-trigger and manage updates manually via `vendor/bin/scaffold`
 
 ## Configuration
 
-Minimal `composer.json` for a project using one scaffold provider:
+Scaffold configuration for a project with `php-forge/baseline` and `php-forge/coding-standard` already installed:
 
 ```json
 {
     "require": {
-        "yii2-extensions/scaffold": "^0.1",
-        "yii2-extensions/app-base": "^0.1"
+        "php-forge/scaffold": "^0.3"
     },
     "config": {
         "allow-plugins": {
-            "yii2-extensions/scaffold": true
+            "php-forge/scaffold": true
         }
     },
     "extra": {
         "scaffold": {
             "allowed-packages": [
-                "yii2-extensions/app-base"
+                "php-forge/baseline",
+                "php-forge/coding-standard"
             ]
         }
     }
@@ -100,8 +100,8 @@ Minimal `composer.json` for a project using one scaffold provider:
 
 ## Console commands
 
-After `composer install`, the plugin ships a standalone Symfony Console CLI at `vendor/bin/scaffold`
-that works in any PHP project (Yii2, Yii3, Laravel, Symfony, plain PHP).
+After `composer install`, the plugin ships a standalone Symfony Console CLI at `vendor/bin/scaffold` that works in any
+PHP project (Yii2, Yii3, Laravel, Symfony, plain PHP).
 
 | Command                                                            | What it does                                                                                                                                     |
 | ------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------ |
@@ -136,21 +136,19 @@ See [`docs/console.md`](docs/console.md) for the full reference.
 ## Package information
 
 [![PHP](https://img.shields.io/badge/%3E%3D8.3-777BB4.svg?style=for-the-badge&logo=php&logoColor=white)](https://www.php.net/releases/8.3/en.php)
-[![Latest Stable Version](https://img.shields.io/packagist/v/yii2-extensions/scaffold.svg?style=for-the-badge&logo=packagist&logoColor=white&label=Stable)](https://packagist.org/packages/yii2-extensions/scaffold)
-[![Total Downloads](https://img.shields.io/packagist/dt/yii2-extensions/scaffold.svg?style=for-the-badge&logo=composer&logoColor=white&label=Downloads)](https://packagist.org/packages/yii2-extensions/scaffold)
+[![Latest Stable Version](https://img.shields.io/packagist/v/php-forge/scaffold.svg?style=for-the-badge&logo=packagist&logoColor=white&label=Stable)](https://packagist.org/packages/php-forge/scaffold)
+[![Total Downloads](https://img.shields.io/packagist/dt/php-forge/scaffold.svg?style=for-the-badge&logo=composer&logoColor=white&label=Downloads)](https://packagist.org/packages/php-forge/scaffold)
 
 ## Project status
 
-[![PHPStan Level Max](https://img.shields.io/badge/PHPStan-Level%20Max-4F5D95.svg?style=for-the-badge&logo=github&logoColor=white)](https://github.com/yii2-extensions/scaffold/actions/workflows/static.yml)
-[![Quality](https://img.shields.io/github/actions/workflow/status/yii2-extensions/scaffold/quality.yml?style=for-the-badge&label=Quality&logo=github)](https://github.com/yii2-extensions/scaffold/actions/workflows/quality.yml)
+[![PHPStan Level Max](https://img.shields.io/badge/PHPStan-Level%20Max-4F5D95.svg?style=for-the-badge&logo=github&logoColor=white)](https://github.com/php-forge/scaffold/actions/workflows/static.yml)
+[![Quality](https://img.shields.io/github/actions/workflow/status/php-forge/scaffold/quality.yml?style=for-the-badge&label=Quality&logo=github)](https://github.com/php-forge/scaffold/actions/workflows/quality.yml)
 [![StyleCI](https://img.shields.io/badge/StyleCI-Passed-44CC11.svg?style=for-the-badge&logo=github&logoColor=white)](https://github.styleci.io/repos/1212894073?branch=main)
 
 ## Our social networks
 
 [![Follow on X](https://img.shields.io/badge/-Follow%20on%20X-1DA1F2.svg?style=for-the-badge&logo=x&logoColor=white&labelColor=000000)](https://x.com/Terabytesoftw)
 [![Follow on Facebook](https://img.shields.io/badge/-Follow%20on%20Facebook-1877F2.svg?style=for-the-badge&logo=facebook&logoColor=white&labelColor=000000)](https://www.facebook.com/wilmer.arambula.9)
-[![Join our Subreddit](https://img.shields.io/badge/-Join%20our%20Subreddit-FF4500.svg?style=for-the-badge&logo=reddit&logoColor=white&labelColor=000000)](https://www.reddit.com/r/Yii2/)
-[![Join on Telegram](https://img.shields.io/badge/-Join%20on%20Telegram-26A5E4.svg?style=for-the-badge&logo=telegram&logoColor=white&labelColor=000000)](https://t.me/yii_framework_in_english)
 
 ## License
 
