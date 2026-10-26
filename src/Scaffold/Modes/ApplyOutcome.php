@@ -2,7 +2,7 @@
 
 declare(strict_types=1);
 
-namespace yii\scaffold\Scaffold\Modes;
+namespace PHPForge\Scaffold\Scaffold\Modes;
 
 /**
  * Enumerates the possible outcomes after applying a scaffold file mapping.

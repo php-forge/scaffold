@@ -2,14 +2,14 @@
 
 declare(strict_types=1);
 
-namespace yii\scaffold\Scaffold;
+namespace PHPForge\Scaffold\Scaffold;
 
 use Composer\IO\IOInterface;
+use PHPForge\Scaffold\Manifest\FileMapping;
+use PHPForge\Scaffold\Scaffold\Lock\Hasher;
+use PHPForge\Scaffold\Scaffold\Modes\{ApplyResult, ModeInterface};
+use PHPForge\Scaffold\Security\{PackageAllowlist, PathValidator};
 use RuntimeException;
-use yii\scaffold\Manifest\FileMapping;
-use yii\scaffold\Scaffold\Lock\Hasher;
-use yii\scaffold\Scaffold\Modes\{ApplyResult, ModeInterface};
-use yii\scaffold\Security\{PackageAllowlist, PathValidator};
 
 use function realpath;
 

@@ -2,12 +2,12 @@
 
 declare(strict_types=1);
 
-namespace yii\scaffold\Console;
+namespace PHPForge\Scaffold\Console;
 
 use Composer\InstalledVersions;
 use OutOfBoundsException;
+use PHPForge\Scaffold\Console\Command\{DiffCommand, EjectCommand, ProvidersCommand, ReapplyCommand, StatusCommand};
 use Symfony\Component\Console\Application as SymfonyApplication;
-use yii\scaffold\Console\Command\{DiffCommand, EjectCommand, ProvidersCommand, ReapplyCommand, StatusCommand};
 
 /**
  * Symfony Console application that exposes the scaffold plugin's five commands as a standalone CLI, available via
@@ -21,12 +21,12 @@ final class Application extends SymfonyApplication
      * Fallback version returned by {@see resolveVersion()} when the package is not installed via Composer (for example,
      * when the source tree is loaded directly without running `composer install` first).
      */
-    public const string FALLBACK_VERSION = '0.1.x-dev';
+    public const string FALLBACK_VERSION = '0.3.x-dev';
 
     /**
      * Application / Composer package name.
      */
-    public const string NAME = 'yii2-extensions/scaffold';
+    public const string NAME = 'php-forge/scaffold';
 
     public function __construct()
     {

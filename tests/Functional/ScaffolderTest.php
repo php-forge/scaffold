@@ -1,0 +1,1088 @@
+<?php
+
+declare(strict_types=1);
+
+namespace PHPForge\Scaffold\Tests\Functional;
+
+use Composer\IO\{BufferIO, IOInterface, NullIO};
+use Composer\Package\PackageInterface;
+use PHPForge\Scaffold\Manifest\{ManifestExpander, ManifestLoader, ManifestSchema};
+use PHPForge\Scaffold\Scaffold\{Applier, Scaffolder};
+use PHPForge\Scaffold\Scaffold\Lock\{Hasher, LockFile};
+use PHPForge\Scaffold\Security\{PackageAllowlist, PathValidator};
+use PHPForge\Scaffold\Tests\Support\{FakeProjectBuilder, TempDirectoryTrait};
+use PHPUnit\Framework\Attributes\Group;
+use PHPUnit\Framework\TestCase;
+use ReflectionMethod;
+
+/**
+ * Functional tests for {@see Scaffolder} end-to-end scaffold execution.
+ */
+#[Group('scaffold')]
+#[Group('functional')]
+final class ScaffolderTest extends TestCase
+{
+    use TempDirectoryTrait;
+
+    public function testAllowedPackageNotInstalledEmitsSkipMessage(): void
+    {
+        $builder = new FakeProjectBuilder($this->tempDir);
+
+        // Root authorizes a provider that was never added to the installed-packages list.
+        $root = $this->makeRootPackage(['php-forge/missing']);
+
+        $io = new BufferIO();
+        $scaffolder = new Scaffolder(
+            new ManifestLoader(new ManifestSchema(), new ManifestExpander()),
+            new Applier(
+                new PackageAllowlist(['php-forge/missing']),
+                new PathValidator(),
+                new Hasher(),
+                $io,
+            ),
+            new LockFile($builder->getProjectRoot()),
+            $io,
+        );
+
+        $scaffolder->scaffold($root, [], $builder->getProjectRoot(), $builder->getVendorDir(), true);
+
+        self::assertStringContainsString(
+            'Provider "php-forge/missing" is not installed',
+            $io->getOutput(),
+            "Allowed providers not installed by Composer must emit a skip message so 'allowed-packages' typos are noticed.",
+        );
+    }
+
+    public function testAppendModeIsIdempotentOnFullScaffold(): void
+    {
+        $builder = new FakeProjectBuilder($this->tempDir);
+
+        $builder->createStubFile('php-forge/test', '.gitignore', '*.log');
+        $builder->createProjectFile('.gitignore', 'vendor/');
+
+        $provider = $this->makeProviderPackage(
+            'php-forge/test',
+            [
+                'scaffold' => [
+                    'copy' => ['.gitignore'],
+                    'modes' => ['.gitignore' => 'append'],
+                ],
+            ],
+        );
+        $root = $this->makeRootPackage(['php-forge/test']);
+        $scaffolder = $this->makeScaffolder(['php-forge/test'], $builder);
+
+        // First run: full scaffold writes the missing line.
+        $scaffolder->scaffold($root, [$provider], $builder->getProjectRoot(), $builder->getVendorDir(), true);
+
+        $afterFirst = file_get_contents($builder->getProjectRoot() . '/.gitignore');
+
+        // Second full scaffold: every provider line is already present, so nothing should change.
+        $scaffolder->scaffold($root, [$provider], $builder->getProjectRoot(), $builder->getVendorDir(), true);
+
+        $afterSecond = file_get_contents($builder->getProjectRoot() . '/.gitignore');
+
+        self::assertSame(
+            $afterFirst,
+            $afterSecond,
+            'Append mode must be idempotent on full scaffold and never duplicate provider lines already present.',
+        );
+    }
+
+    public function testAppendModeRefreshesLockOwnershipWhenNewProviderClaimsExistingFile(): void
+    {
+        $builder = new FakeProjectBuilder($this->tempDir);
+
+        // Two providers ship the same '.gitignore' content; the destination already matches both stubs identically.
+        $builder->createStubFile('php-forge/old-provider', '.gitignore', "*.log\n");
+        $builder->createStubFile('php-forge/new-provider', '.gitignore', "*.log\n");
+        $builder->createProjectFile('.gitignore', "*.log\n");
+
+        $oldProvider = $this->makeProviderPackage(
+            'php-forge/old-provider',
+            ['scaffold' => ['copy' => ['.gitignore'], 'modes' => ['.gitignore' => 'append']]],
+        );
+        $newProvider = $this->makeProviderPackage(
+            'php-forge/new-provider',
+            ['scaffold' => ['copy' => ['.gitignore'], 'modes' => ['.gitignore' => 'append']]],
+        );
+
+        // First run: only the old provider is allowed; lock records its ownership.
+        $oldRoot = $this->makeRootPackage(['php-forge/old-provider']);
+        $oldScaffolder = $this->makeScaffolder(['php-forge/old-provider'], $builder);
+        $oldScaffolder->scaffold($oldRoot, [$oldProvider], $builder->getProjectRoot(), $builder->getVendorDir(), true);
+
+        $oldLock = (new LockFile($builder->getProjectRoot()))->read();
+
+        self::assertSame(
+            'php-forge/old-provider',
+            $oldLock['files']['.gitignore']['provider'] ?? null,
+            'Initial scaffold must record the old provider as the owner.',
+        );
+
+        // Second run: only the new provider is allowed. AppendMode finds no missing lines (Skipped) but the
+        // ownership metadata must be refreshed to point to the new provider.
+        $newRoot = $this->makeRootPackage(['php-forge/new-provider']);
+        $newScaffolder = $this->makeScaffolder(['php-forge/new-provider'], $builder);
+        $newScaffolder->scaffold($newRoot, [$newProvider], $builder->getProjectRoot(), $builder->getVendorDir(), true);
+
+        $newLock = (new LockFile($builder->getProjectRoot()))->read();
+
+        self::assertSame(
+            'php-forge/new-provider',
+            $newLock['files']['.gitignore']['provider'] ?? null,
+            'Skipped append must refresh the lock ownership metadata when a different provider claims the file.',
+        );
+    }
+
+    public function testAppendModeSkippedOnInstallWhenAlreadyInLock(): void
+    {
+        $builder = new FakeProjectBuilder($this->tempDir);
+
+        $builder->createStubFile('php-forge/test', '.gitignore', '*.log');
+        $builder->createProjectFile('.gitignore', 'vendor/');
+
+        $provider = $this->makeProviderPackage(
+            'php-forge/test',
+            [
+                'scaffold' => [
+                    'copy' => ['.gitignore'],
+                    'modes' => ['.gitignore' => 'append'],
+                ],
+            ],
+        );
+        $root = $this->makeRootPackage(['php-forge/test']);
+        $scaffolder = $this->makeScaffolder(['php-forge/test'], $builder);
+
+        // First run: full scaffold writes the append and records lock.
+        $scaffolder->scaffold($root, [$provider], $builder->getProjectRoot(), $builder->getVendorDir(), true);
+
+        $afterFirst = file_get_contents($builder->getProjectRoot() . '/.gitignore');
+
+        // Second run: partial (install) append is already in lock, must be skipped.
+        $scaffolder->scaffold($root, [$provider], $builder->getProjectRoot(), $builder->getVendorDir(), false);
+
+        self::assertSame(
+            $afterFirst,
+            file_get_contents($builder->getProjectRoot() . '/.gitignore'),
+            'Append mode file should not be re-appended on install if already in lock.',
+        );
+    }
+
+    public function testApplierExceptionIsLoggedAndScaffoldingContinues(): void
+    {
+        $builder = new FakeProjectBuilder($this->tempDir);
+
+        // Allowlist names a different provider so 'apply()' throws "Package not allowed"; the loop must catch and log it.
+        $builder->createStubFile('php-forge/test', 'app.php', 'content');
+
+        $provider = $this->makeProviderPackage(
+            'php-forge/test',
+            [
+                'scaffold' => [
+                    'copy' => ['app.php'],
+                ],
+            ],
+        );
+        $root = $this->makeRootPackage(['php-forge/test']);
+
+        $io = new BufferIO();
+
+        // Allowlist only admits a DIFFERENT provider, so assertAllowed throws RuntimeException during apply().
+        $scaffolder = new Scaffolder(
+            new ManifestLoader(new ManifestSchema(), new ManifestExpander()),
+            new Applier(new PackageAllowlist(['safe/other']), new PathValidator(), new Hasher(), $io),
+            new LockFile($builder->getProjectRoot()),
+            $io,
+        );
+
+        $scaffolder->scaffold($root, [$provider], $builder->getProjectRoot(), $builder->getVendorDir(), true);
+
+        self::assertStringContainsString(
+            'Error applying "app.php"',
+            $io->getOutput(),
+            'Applier exceptions must be caught per-destination and reported via writeError without aborting the loop.',
+        );
+    }
+
+    public function testEmptyAllowedPackagesIsNoop(): void
+    {
+        $this->expectNotToPerformAssertions();
+
+        $builder = new FakeProjectBuilder($this->tempDir);
+
+        $root = $this->makeRootPackage([]);
+        $this
+            ->makeScaffolder([], $builder)
+            ->scaffold($root, [], $builder->getProjectRoot(), $builder->getVendorDir(), true);
+    }
+
+    public function testEmptyAllowedPackagesListEmitsSkipMessage(): void
+    {
+        $builder = new FakeProjectBuilder($this->tempDir);
+
+        // Root with `extra.scaffold` present but the allowed-packages list explicitly empty.
+        $root = self::createStub(PackageInterface::class);
+        $root->method('getExtra')->willReturn(['scaffold' => ['allowed-packages' => []]]);
+
+        $io = new BufferIO();
+        $scaffolder = new Scaffolder(
+            new ManifestLoader(new ManifestSchema(), new ManifestExpander()),
+            new Applier(new PackageAllowlist([]), new PathValidator(), new Hasher(), $io),
+            new LockFile($builder->getProjectRoot()),
+            $io,
+        );
+
+        $scaffolder->scaffold($root, [], $builder->getProjectRoot(), $builder->getVendorDir(), true);
+
+        self::assertStringContainsString(
+            'No allowed-packages configured',
+            $io->getOutput(),
+            'Empty allowed-packages list must emit the configured-but-empty skip message.',
+        );
+    }
+
+    public function testEmptyManifestReturnsEarlyAndDoesNotWriteLockFile(): void
+    {
+        $builder = new FakeProjectBuilder($this->tempDir);
+
+        // Provider has no scaffold extra at all; loader returns an empty mapping list and the lock stays untouched.
+        $provider = $this->makeProviderPackage('php-forge/empty', []);
+        $root = $this->makeRootPackage(['php-forge/empty']);
+
+        $this
+            ->makeScaffolder(['php-forge/empty'], $builder)
+            ->scaffold($root, [$provider], $builder->getProjectRoot(), $builder->getVendorDir(), true);
+
+        self::assertFalse(
+            (new LockFile($builder->getProjectRoot()))->exists(),
+            'An empty manifest must short-circuit before the lock is written.',
+        );
+    }
+
+    public function testFailedManifestLoadIsLoggedAndSkippedInsteadOfFatal(): void
+    {
+        $builder = new FakeProjectBuilder($this->tempDir);
+
+        $provider = $this->makeProviderPackage(
+            'php-forge/bad',
+            [
+                // `manifest: "../escape.json"` triggers a traversal RuntimeException inside the loader.
+                'scaffold' => ['manifest' => '../escape.json'],
+            ],
+        );
+        $root = $this->makeRootPackage(['php-forge/bad']);
+
+        $io = new BufferIO();
+        $scaffolder = new Scaffolder(
+            new ManifestLoader(new ManifestSchema(), new ManifestExpander()),
+            new Applier(new PackageAllowlist(['php-forge/bad']), new PathValidator(), new Hasher(), $io),
+            new LockFile($builder->getProjectRoot()),
+            $io,
+        );
+
+        $scaffolder->scaffold($root, [$provider], $builder->getProjectRoot(), $builder->getVendorDir(), true);
+
+        self::assertStringContainsString(
+            'Failed to load manifest for "php-forge/bad"',
+            $io->getOutput(),
+            'A manifest-loader exception must be caught and reported per-provider rather than aborting the entire run.',
+        );
+    }
+
+    public function testFirstScaffoldPersistsProviderPathInLock(): void
+    {
+        $builder = new FakeProjectBuilder($this->tempDir);
+
+        $builder->createStubFile('php-forge/test', 'app.php', 'a');
+
+        $provider = $this->makeProviderPackage(
+            'php-forge/test',
+            [
+                'scaffold' => [
+                    'copy' => ['app.php'],
+                ],
+            ],
+        );
+        $root = $this->makeRootPackage(['php-forge/test']);
+        $this
+            ->makeScaffolder(['php-forge/test'], $builder)
+            ->scaffold($root, [$provider], $builder->getProjectRoot(), $builder->getVendorDir(), true);
+
+        $lockData = (new LockFile($builder->getProjectRoot()))->read();
+
+        self::assertArrayHasKey(
+            'php-forge/test',
+            $lockData['providers'],
+            'Lock file must persist the provider entry after the first scaffold run.',
+        );
+
+        $providerEntry = $lockData['providers']['php-forge/test'] ?? null;
+
+        $expectedPath = str_replace('\\', '/', $builder->getVendorDir() . '/php-forge/test');
+
+        self::assertSame(
+            ['version' => '2.0.0', 'path' => $expectedPath],
+            $providerEntry,
+            'Provider entry must record both version and path (absolute when vendor is outside the project root).',
+        );
+    }
+
+    public function testFirstScaffoldRecordsRelativePathWhenProviderLivesInsideProject(): void
+    {
+        $builder = new FakeProjectBuilder($this->tempDir);
+
+        $providerRootInsideProject = $builder->getProjectRoot() . '/vendor/php-forge/test';
+
+        mkdir($providerRootInsideProject, 0o777, recursive: true);
+        file_put_contents($providerRootInsideProject . '/app.php', 'a');
+
+        $provider = $this->makeProviderPackage(
+            'php-forge/test',
+            [
+                'scaffold' => [
+                    'copy' => ['app.php'],
+                ],
+            ],
+        );
+        $root = $this->makeRootPackage(['php-forge/test']);
+        $this
+            ->makeScaffolder(['php-forge/test'], $builder)
+            ->scaffold(
+                $root,
+                [$provider],
+                $builder->getProjectRoot(),
+                $builder->getVendorDir(),
+                true,
+                ['php-forge/test' => $providerRootInsideProject],
+            );
+
+        $lockData = (new LockFile($builder->getProjectRoot()))->read();
+
+        self::assertSame(
+            ['version' => '2.0.0', 'path' => 'vendor/php-forge/test'],
+            $lockData['providers']['php-forge/test'] ?? null,
+            'When the provider install path is inside the project root, the lock must store a project-relative path.',
+        );
+    }
+
+    public function testLastProviderWinsForSameDestination(): void
+    {
+        $builder = new FakeProjectBuilder($this->tempDir);
+
+        $builder->createStubFile('php-forge/base', 'app.php', 'base content');
+        $builder->createStubFile('php-forge/override', 'app.php', 'override content');
+
+        $base = $this->makeProviderPackage(
+            'php-forge/base',
+            [
+                'scaffold' => [
+                    'copy' => ['app.php'],
+                ],
+            ],
+        );
+        $override = $this->makeProviderPackage(
+            'php-forge/override',
+            [
+                'scaffold' => [
+                    'copy' => ['app.php'],
+                ],
+            ],
+        );
+        $root = $this->makeRootPackage(['php-forge/base', 'php-forge/override']);
+        $this
+            ->makeScaffolder(['php-forge/base', 'php-forge/override'], $builder)
+            ->scaffold(
+                $root,
+                [$base, $override],
+                $builder->getProjectRoot(),
+                $builder->getVendorDir(),
+                true,
+            );
+
+        self::assertSame(
+            'override content',
+            file_get_contents($builder->getProjectRoot() . '/app.php'),
+            'When multiple providers write to the same destination, the last provider in the list should win.',
+        );
+
+        $lockData = (new LockFile($builder->getProjectRoot()))->read();
+
+        $appEntry = $lockData['files']['app.php'] ?? null;
+
+        self::assertNotNull(
+            $appEntry,
+            "Lock must contain exactly one entry for 'app.php'.",
+        );
+        self::assertCount(
+            1,
+            array_filter(array_keys($lockData['files']), static fn(string $k): bool => $k === 'app.php'),
+            "Lock must contain exactly one entry for 'app.php'.",
+        );
+        self::assertSame(
+            'php-forge/override',
+            $appEntry['provider'],
+            "Lock entry for 'app.php' must be attributed to the last (winning) provider.",
+        );
+    }
+
+    public function testLockFileRecordsCorrectHash(): void
+    {
+        $builder = new FakeProjectBuilder($this->tempDir);
+
+        $builder->createStubFile('php-forge/app-base-scaffold', 'nginx.conf', 'server {}');
+
+        $provider = $this->makeProviderPackage(
+            'php-forge/app-base-scaffold',
+            [
+                'scaffold' => [
+                    'copy' => ['nginx.conf'],
+                ],
+            ],
+        );
+        $root = $this->makeRootPackage(['php-forge/app-base-scaffold']);
+        $this
+            ->makeScaffolder(['php-forge/app-base-scaffold'], $builder)
+            ->scaffold($root, [$provider], $builder->getProjectRoot(), $builder->getVendorDir(), true);
+
+        $lockFile = new LockFile($builder->getProjectRoot());
+
+        $hash = $lockFile->getHashAtScaffold('nginx.conf');
+
+        self::assertNotNull(
+            $hash,
+            'Lock file should contain a hash entry for the scaffolded file.',
+        );
+        self::assertStringStartsWith(
+            'sha256:',
+            $hash,
+            'Hash should be prefixed with sha256:',
+        );
+        self::assertSame(
+            $hash,
+            (new Hasher())->hash($builder->getProjectRoot() . '/nginx.conf'),
+            'Hash should match the computed hash of the scaffolded file.',
+        );
+    }
+
+    public function testLogsSkipMessageWhenRootPackageHasNoScaffoldExtra(): void
+    {
+        $builder = new FakeProjectBuilder($this->tempDir);
+
+        $root = self::createStub(PackageInterface::class);
+
+        $root->method('getExtra')->willReturn([]);
+
+        $io = $this->createMock(IOInterface::class);
+
+        $io->expects(self::once())
+            ->method('write')
+            ->with(self::stringContains('No extra.scaffold configuration'));
+
+        (new Scaffolder(
+            new ManifestLoader(new ManifestSchema(), new ManifestExpander()),
+            new Applier(new PackageAllowlist([]), new PathValidator(), new Hasher(), new NullIO()),
+            new LockFile($builder->getProjectRoot()),
+            $io,
+        ))->scaffold($root, [], $builder->getProjectRoot(), $builder->getVendorDir(), true);
+    }
+
+    public function testManifestLoadFailureOnEarlierProviderDoesNotHaltLaterProviders(): void
+    {
+        $builder = new FakeProjectBuilder($this->tempDir);
+
+        $builder->createStubFile('php-forge/good', 'app.php', 'good-content');
+
+        $bad = $this->makeProviderPackage(
+            'php-forge/bad',
+            // `manifest: "../escape.json"` triggers a traversal RuntimeException inside the loader.
+            ['scaffold' => ['manifest' => '../escape.json']],
+        );
+        $good = $this->makeProviderPackage(
+            'php-forge/good',
+            [
+                'scaffold' => [
+                    'copy' => ['app.php'],
+                ],
+            ],
+        );
+        // 'bad' is listed first so its manifest-load failure triggers the continue-branch before 'good' is processed.
+        $root = $this->makeRootPackage(['php-forge/bad', 'php-forge/good']);
+
+        $bufferIo = new BufferIO();
+        $scaffolder = new Scaffolder(
+            new ManifestLoader(new ManifestSchema(), new ManifestExpander()),
+            new Applier(
+                new PackageAllowlist(['php-forge/bad', 'php-forge/good']),
+                new PathValidator(),
+                new Hasher(),
+                $bufferIo,
+            ),
+            new LockFile($builder->getProjectRoot()),
+            $bufferIo,
+        );
+
+        $scaffolder->scaffold(
+            $root,
+            [$bad, $good],
+            $builder->getProjectRoot(),
+            $builder->getVendorDir(),
+            true,
+        );
+
+        self::assertFileExists(
+            $builder->getProjectRoot() . '/app.php',
+            "When an earlier provider's manifest fails to load, the foreach must 'continue' so 'app.php' is still written.",
+        );
+        self::assertSame(
+            'good-content',
+            file_get_contents($builder->getProjectRoot() . '/app.php'),
+            "The later provider's stub must be applied after the earlier provider's manifest-load failure is logged.",
+        );
+    }
+
+    public function testMissingProviderPackageDoesNotHaltLaterProviders(): void
+    {
+        $builder = new FakeProjectBuilder($this->tempDir);
+
+        $builder->createStubFile('php-forge/good', 'app.php', 'good-content');
+
+        $good = $this->makeProviderPackage(
+            'php-forge/good',
+            [
+                'scaffold' => [
+                    'copy' => ['app.php'],
+                ],
+            ],
+        );
+        // 'missing' is allowed but not installed so its branch triggers the skip-message continue path.
+        $root = $this->makeRootPackage(['php-forge/missing', 'php-forge/good']);
+
+        $bufferIo = new BufferIO();
+        $scaffolder = new Scaffolder(
+            new ManifestLoader(new ManifestSchema(), new ManifestExpander()),
+            new Applier(
+                new PackageAllowlist(['php-forge/missing', 'php-forge/good']),
+                new PathValidator(),
+                new Hasher(),
+                $bufferIo,
+            ),
+            new LockFile($builder->getProjectRoot()),
+            $bufferIo,
+        );
+
+        // Note: only 'good' is passed as installed; 'missing' is absent.
+        $scaffolder->scaffold($root, [$good], $builder->getProjectRoot(), $builder->getVendorDir(), true);
+
+        self::assertStringContainsString(
+            'Provider "php-forge/missing" is not installed',
+            $bufferIo->getOutput(),
+            'The uninstalled allowed-package must emit the skip message before the loop continues.',
+        );
+        self::assertFileExists(
+            $builder->getProjectRoot() . '/app.php',
+            "After the uninstalled-provider skip, the loop must 'continue' so 'app.php' is still written.",
+        );
+    }
+
+    public function testMultipleFilesFromSameProvider(): void
+    {
+        $builder = new FakeProjectBuilder($this->tempDir);
+
+        $builder->createStubFile('php-forge/test', 'a.php', 'a');
+        $builder->createStubFile('php-forge/test', 'b.php', 'b');
+
+        $provider = $this->makeProviderPackage(
+            'php-forge/test',
+            [
+                'scaffold' => [
+                    'copy' => [
+                        'a.php',
+                        'b.php',
+                    ],
+                ],
+            ],
+        );
+        $root = $this->makeRootPackage(['php-forge/test']);
+        $this
+            ->makeScaffolder(['php-forge/test'], $builder)
+            ->scaffold($root, [$provider], $builder->getProjectRoot(), $builder->getVendorDir(), true);
+
+        self::assertFileExists(
+            $builder->getProjectRoot() . '/a.php',
+            'First scaffolded file should exist.',
+        );
+        self::assertFileExists(
+            $builder->getProjectRoot() . '/b.php',
+            'Second scaffolded file should exist.',
+        );
+
+        $lockFile = new LockFile($builder->getProjectRoot());
+
+        self::assertNotNull(
+            $lockFile->getHashAtScaffold('a.php'),
+            'Lock file should contain a hash entry for the first scaffolded file.',
+        );
+        self::assertNotNull(
+            $lockFile->getHashAtScaffold('b.php'),
+            'Lock file should contain a hash entry for the second scaffolded file.',
+        );
+    }
+
+    public function testNonStringAllowedEntryIsSkippedWithoutHaltingLaterProviders(): void
+    {
+        $builder = new FakeProjectBuilder($this->tempDir);
+
+        $builder->createStubFile('php-forge/good', 'app.php', 'good-content');
+
+        $good = $this->makeProviderPackage(
+            'php-forge/good',
+            [
+                'scaffold' => [
+                    'copy' => ['app.php'],
+                ],
+            ],
+        );
+
+        // First entry is a non-string int so '!is_string' triggers 'continue'; the string entry after must still run.
+        $root = self::createStub(PackageInterface::class);
+        $root->method('getExtra')->willReturn(
+            [
+                'scaffold' => [
+                    'allowed-packages' => [42, 'php-forge/good'],
+                ],
+            ],
+        );
+
+        $bufferIo = new BufferIO();
+        $scaffolder = new Scaffolder(
+            new ManifestLoader(new ManifestSchema(), new ManifestExpander()),
+            new Applier(new PackageAllowlist(['php-forge/good']), new PathValidator(), new Hasher(), $bufferIo),
+            new LockFile($builder->getProjectRoot()),
+            $bufferIo,
+        );
+
+        $scaffolder->scaffold($root, [$good], $builder->getProjectRoot(), $builder->getVendorDir(), true);
+
+        self::assertFileExists(
+            $builder->getProjectRoot() . '/app.php',
+            "When the first allowed-packages entry is not a string, the loop must 'continue' so 'php-forge/good' runs.",
+        );
+    }
+
+    public function testNoScaffoldExtraOnRootPackageIsNoop(): void
+    {
+        $this->expectNotToPerformAssertions();
+
+        $builder = new FakeProjectBuilder($this->tempDir);
+
+        $this
+            ->makeScaffolder([], $builder)
+            ->scaffold($this->makeRootPackage([]), [], $builder->getProjectRoot(), $builder->getVendorDir(), true);
+    }
+
+    public function testPrefixMatchesHonorsCaseInsensitiveFlag(): void
+    {
+        $method = new ReflectionMethod(Scaffolder::class, 'prefixMatches');
+
+        // Case-sensitive branch matches identical casing but rejects differing casing.
+        self::assertTrue(
+            (bool) $method->invoke(null, '/Project/vendor/foo', '/Project/', false),
+            'Byte-exact comparison must accept an exact casing prefix.',
+        );
+        self::assertFalse(
+            (bool) $method->invoke(null, '/project/vendor/foo', '/Project/', false),
+            'Byte-exact comparison must reject a prefix that only differs in casing.',
+        );
+
+        // Case-insensitive branch covers the NTFS/Windows path otherwise unreachable on Linux.
+        self::assertTrue(
+            (bool) $method->invoke(null, '/project/vendor/foo', '/Project/', true),
+            'Case-insensitive comparison must accept a prefix that only differs in casing.',
+        );
+        self::assertFalse(
+            (bool) $method->invoke(null, '/elsewhere/vendor/foo', '/Project/', true),
+            'Case-insensitive comparison must still reject a prefix that is genuinely different.',
+        );
+    }
+
+    public function testPrependModeSkippedOnPartialRunWhenAlreadyInLock(): void
+    {
+        $builder = new FakeProjectBuilder($this->tempDir);
+
+        $builder->createStubFile('php-forge/test', 'prepend.txt', 'header');
+        $builder->createProjectFile('prepend.txt', 'existing');
+
+        $provider = $this->makeProviderPackage(
+            'php-forge/test',
+            [
+                'scaffold' => [
+                    'copy' => ['prepend.txt'],
+                    'modes' => ['prepend.txt' => 'prepend'],
+                ],
+            ],
+        );
+
+        $root = $this->makeRootPackage(['php-forge/test']);
+        $scaffolder = $this->makeScaffolder(['php-forge/test'], $builder);
+
+        // First run records a lock entry for the prepend mapping.
+        $scaffolder->scaffold($root, [$provider], $builder->getProjectRoot(), $builder->getVendorDir(), true);
+
+        $afterFirst = file_get_contents($builder->getProjectRoot() . '/prepend.txt');
+
+        // ´artial run must leave the prepended file untouched because it already lives in the lock.
+        $scaffolder->scaffold($root, [$provider], $builder->getProjectRoot(), $builder->getVendorDir(), false);
+
+        self::assertSame(
+            $afterFirst,
+            file_get_contents($builder->getProjectRoot() . '/prepend.txt'),
+            'Prepend mode must be skipped on partial runs when the destination is already recorded in the lock.',
+        );
+    }
+
+    public function testPreserveDoesNotOverwriteAlreadyTrackedLockEntry(): void
+    {
+        $builder = new FakeProjectBuilder($this->tempDir);
+
+        $builder->createStubFile('php-forge/test', 'config.php', 'stub');
+        $builder->createProjectFile('config.php', 'user-content');
+
+        $provider = $this->makeProviderPackage(
+            'php-forge/test',
+            [
+                'scaffold' => [
+                    'copy' => ['config.php'],
+                    'modes' => ['config.php' => 'preserve'],
+                ],
+            ],
+        );
+        $root = $this->makeRootPackage(['php-forge/test']);
+        $scaffolder = $this->makeScaffolder(['php-forge/test'], $builder);
+
+        // First run records the current hash in the lock.
+        $scaffolder->scaffold($root, [$provider], $builder->getProjectRoot(), $builder->getVendorDir(), true);
+
+        $initialHash = (new LockFile($builder->getProjectRoot()))->getHashAtScaffold('config.php');
+
+        // User modifies the file in place; a second preserve run must NOT overwrite the lock entry.
+        file_put_contents($builder->getProjectRoot() . '/config.php', 'user-modified');
+
+        $scaffolder->scaffold($root, [$provider], $builder->getProjectRoot(), $builder->getVendorDir(), true);
+
+        self::assertSame(
+            $initialHash,
+            (new LockFile($builder->getProjectRoot()))->getHashAtScaffold('config.php'),
+            'Preserve mode must not overwrite an already-tracked lock entry even when the on-disk file changes.',
+        );
+    }
+
+    public function testPreserveFileIsNotOverwritten(): void
+    {
+        $builder = new FakeProjectBuilder($this->tempDir);
+
+        $builder->createStubFile('php-forge/test', 'config/params.php', 'stub content');
+        $builder->createProjectFile('config/params.php', 'user content');
+
+        $provider = $this->makeProviderPackage(
+            'php-forge/test',
+            [
+                'scaffold' => [
+                    'copy' => ['config/params.php'],
+                    'modes' => ['config/params.php' => 'preserve'],
+                ],
+            ],
+        );
+
+        $root = $this->makeRootPackage(['php-forge/test']);
+        $this
+            ->makeScaffolder(['php-forge/test'], $builder)
+            ->scaffold($root, [$provider], $builder->getProjectRoot(), $builder->getVendorDir(), true);
+
+        self::assertSame(
+            'user content',
+            file_get_contents($builder->getProjectRoot() . '/config/params.php'),
+            'Preserve mode file should not be overwritten if it already exists.',
+        );
+
+        $lockData = (new LockFile($builder->getProjectRoot()))->read();
+
+        $lockEntry = $lockData['files']['config/params.php'] ?? null;
+
+        $userContentHash = (new Hasher())->hash($builder->getProjectRoot() . '/config/params.php');
+
+        if ($lockEntry !== null) {
+            self::assertSame(
+                $userContentHash,
+                $lockEntry['hash'],
+                'If a lock entry exists for a preserved file, its hash must match the untouched user content.',
+            );
+        }
+    }
+
+    public function testPreserveRecordsExistingUntrackedFileInLock(): void
+    {
+        $builder = new FakeProjectBuilder($this->tempDir);
+
+        $builder->createStubFile('php-forge/test', 'config.php', 'stub');
+        $builder->createProjectFile('config.php', 'user-content');
+
+        $provider = $this->makeProviderPackage(
+            'php-forge/test',
+            [
+                'scaffold' => [
+                    'copy' => ['config.php'],
+                    'modes' => ['config.php' => 'preserve'],
+                ],
+            ],
+        );
+        $root = $this->makeRootPackage(['php-forge/test']);
+        $this
+            ->makeScaffolder(['php-forge/test'], $builder)
+            ->scaffold($root, [$provider], $builder->getProjectRoot(), $builder->getVendorDir(), true);
+
+        self::assertFileExists(
+            $builder->getProjectRoot() . '/scaffold-lock.json',
+            'Lock file must be written when preserve mode records an existing untracked file.',
+        );
+
+        $lockData = (new LockFile($builder->getProjectRoot()))->read();
+
+        self::assertArrayHasKey(
+            'config.php',
+            $lockData['files'],
+            'Preserve mode must record untracked existing files in the lock.',
+        );
+
+        $entry = $lockData['files']['config.php'] ?? null;
+
+        self::assertNotNull(
+            $entry,
+            'Lock entry must exist for the preserved file.',
+        );
+        self::assertSame(
+            (new Hasher())->hash($builder->getProjectRoot() . '/config.php'),
+            $entry['hash'],
+            'Recorded hash must match the untouched user content.',
+        );
+    }
+
+    public function testReplaceFileIsWrittenAndLockCreated(): void
+    {
+        $builder = new FakeProjectBuilder($this->tempDir);
+
+        $builder->createStubFile('php-forge/app-base-scaffold', 'config/params.php', '<?php return [];');
+
+        $provider = $this->makeProviderPackage(
+            'php-forge/app-base-scaffold',
+            [
+                'scaffold' => [
+                    'copy' => ['config/params.php'],
+                ],
+            ],
+        );
+        $root = $this->makeRootPackage(['php-forge/app-base-scaffold']);
+        $this
+            ->makeScaffolder(['php-forge/app-base-scaffold'], $builder)
+            ->scaffold($root, [$provider], $builder->getProjectRoot(), $builder->getVendorDir(), true);
+
+        self::assertFileExists(
+            $builder->getProjectRoot() . '/config/params.php',
+            'Replace mode file should be created if it does not exist.',
+        );
+        self::assertFileExists(
+            $builder->getProjectRoot() . '/scaffold-lock.json',
+            'Lock file should be created when replace mode file is written.',
+        );
+    }
+
+    public function testReplaceOverwritesLockEntryForPreviouslyTrackedDestination(): void
+    {
+        $builder = new FakeProjectBuilder($this->tempDir);
+
+        $builder->createStubFile('php-forge/test', 'app.php', 'v1');
+
+        $provider = $this->makeProviderPackage(
+            'php-forge/test',
+            [
+                'scaffold' => [
+                    'copy' => ['app.php'],
+                ],
+            ],
+        );
+        $root = $this->makeRootPackage(['php-forge/test']);
+        $scaffolder = $this->makeScaffolder(['php-forge/test'], $builder);
+
+        $scaffolder->scaffold($root, [$provider], $builder->getProjectRoot(), $builder->getVendorDir(), true);
+
+        $firstHash = (new LockFile($builder->getProjectRoot()))->getHashAtScaffold('app.php');
+
+        // Change the stub so the second run writes different content.
+        $builder->createStubFile('php-forge/test', 'app.php', 'v2');
+        $scaffolder->scaffold($root, [$provider], $builder->getProjectRoot(), $builder->getVendorDir(), true);
+
+        $secondHash = (new LockFile($builder->getProjectRoot()))->getHashAtScaffold('app.php');
+
+        self::assertNotSame(
+            $firstHash,
+            $secondHash,
+            'Lock entry must be overwritten when replace mode re-writes a previously tracked destination.',
+        );
+        self::assertSame(
+            (new Hasher())->hash($builder->getProjectRoot() . '/app.php'),
+            $secondHash,
+            'Lock entry must match the hash of the newly written content.',
+        );
+    }
+
+    public function testScaffoldPersistsUpdatedProviderPathWhenOnlyProviderChanged(): void
+    {
+        $builder = new FakeProjectBuilder($this->tempDir);
+
+        $builder->createStubFile('php-forge/test', 'config.php', 'stub');
+        $builder->createProjectFile('config.php', 'user-content');
+
+        $userHash = (new Hasher())->hash($builder->getProjectRoot() . '/config.php');
+
+        // Pre-populate the lock with an outdated provider path; only the provider-path branch must mark '$dirty = true'.
+        (new LockFile($builder->getProjectRoot()))->write(
+            [
+                'providers' => [
+                    'php-forge/test' => ['path' => '/obsolete/path'],
+                ],
+                'files' => [
+                    'config.php' => [
+                        'hash' => $userHash,
+                        'provider' => 'php-forge/test',
+                        'source' => 'config.php',
+                        'mode' => 'preserve',
+                    ],
+                ],
+            ],
+        );
+
+        $provider = $this->makeProviderPackage(
+            'php-forge/test',
+            [
+                'scaffold' => [
+                    'copy' => ['config.php'],
+                    'modes' => ['config.php' => 'preserve'],
+                ],
+            ],
+        );
+        $root = $this->makeRootPackage(['php-forge/test']);
+        $this
+            ->makeScaffolder(['php-forge/test'], $builder)
+            ->scaffold($root, [$provider], $builder->getProjectRoot(), $builder->getVendorDir(), true);
+
+        $lockData = (new LockFile($builder->getProjectRoot()))->read();
+
+        $providerEntry = $lockData['providers']['php-forge/test'] ?? null;
+
+        $expectedPath = str_replace('\\', '/', $builder->getVendorDir() . '/php-forge/test');
+
+        self::assertSame(
+            ['version' => '2.0.0', 'path' => $expectedPath],
+            $providerEntry,
+            'Provider-entry updates alone must mark the lock dirty so the fresh {version, path} is persisted to disk.',
+        );
+    }
+
+    public function testSubsequentFileAppliedAfterFirstEntryIsSkipped(): void
+    {
+        $builder = new FakeProjectBuilder($this->tempDir);
+
+        $builder->createStubFile('php-forge/test', 'append.txt', 'appended');
+        $builder->createStubFile('php-forge/test', 'fresh.txt', 'fresh content');
+        $builder->createProjectFile('append.txt', 'existing');
+
+        $provider = $this->makeProviderPackage(
+            'php-forge/test',
+            [
+                'scaffold' => [
+                    'copy' => [
+                        'append.txt',
+                        'fresh.txt',
+                    ],
+                    'modes' => ['append.txt' => 'append'],
+                ],
+            ],
+        );
+        $root = $this->makeRootPackage(['php-forge/test']);
+        $scaffolder = $this->makeScaffolder(['php-forge/test'], $builder);
+
+        // First full run records both entries in the lock.
+        $scaffolder->scaffold($root, [$provider], $builder->getProjectRoot(), $builder->getVendorDir(), true);
+
+        // Delete `fresh.txt` so the second run must re-create it even though `append.txt` is locked and skipped first.
+        unlink($builder->getProjectRoot() . '/fresh.txt');
+
+        // Partial run: 'append.txt' is skipped (continue), but the loop must continue to process fresh.txt.
+        $scaffolder->scaffold($root, [$provider], $builder->getProjectRoot(), $builder->getVendorDir(), false);
+
+        self::assertFileExists(
+            $builder->getProjectRoot() . '/fresh.txt',
+            'A file following a skipped append entry must still be applied (loop continues, not breaks).',
+        );
+    }
+
+    protected function setUp(): void
+    {
+        $this->setUpTempDirectory();
+    }
+
+    protected function tearDown(): void
+    {
+        $this->tearDownTempDirectory();
+    }
+
+    /**
+     * @param array<string, mixed> $extra
+     */
+    private function makeProviderPackage(string $name, array $extra, string $version = '2.0.0'): PackageInterface
+    {
+        $pkg = self::createStub(PackageInterface::class);
+
+        $pkg->method('getName')->willReturn($name);
+        $pkg->method('getExtra')->willReturn($extra);
+        $pkg->method('getPrettyVersion')->willReturn($version);
+
+        return $pkg;
+    }
+
+    /**
+     * @param list<string> $allowedPackages
+     */
+    private function makeRootPackage(array $allowedPackages): PackageInterface
+    {
+        $pkg = self::createStub(PackageInterface::class);
+
+        $pkg
+            ->method('getExtra')
+            ->willReturn(
+                $allowedPackages !== []
+                    ? ['scaffold' => ['allowed-packages' => $allowedPackages]]
+                    : [],
+            );
+
+        return $pkg;
+    }
+
+    /**
+     * @param list<string> $allowedPackages
+     */
+    private function makeScaffolder(array $allowedPackages, FakeProjectBuilder $builder): Scaffolder
+    {
+        return new Scaffolder(
+            new ManifestLoader(new ManifestSchema(), new ManifestExpander()),
+            new Applier(
+                new PackageAllowlist($allowedPackages),
+                new PathValidator(),
+                new Hasher(),
+                new NullIO(),
+            ),
+            new LockFile($builder->getProjectRoot()),
+            new NullIO(),
+        );
+    }
+}

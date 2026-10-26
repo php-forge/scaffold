@@ -1,8 +1,8 @@
 # File modes
 
-Every file mapping in a provider manifest declares a `mode` that controls how the plugin writes
-the stub file into the project. The mode also determines how the hash-tracking mechanism reacts
-when a file has been modified by the developer after scaffolding.
+Provider manifests list source paths in `copy` and select write modes by destination path or glob in `modes`. The
+default mode is `replace`. The mode also determines how the hash-tracking mechanism reacts when a file has been modified
+by the developer after scaffolding.
 
 ## Mode reference
 
@@ -18,39 +18,38 @@ when a file has been modified by the developer after scaffolding.
 After writing a file the plugin computes `sha256:<hash_file('sha256', $path)>` and records it in `scaffold-lock.json`.
 On subsequent runs the plugin compares the current on-disk hash to the recorded hash:
 
-- **Hashes match**; the file has not been changed since the last scaffold run. The plugin re-applies the stub
-  (for `replace`) or skips (for `preserve`).
+- **Hashes match**; the file has not been changed since the last scaffold run. The plugin re-applies the stub (for
+  `replace`) or skips (for `preserve`).
 - **Hashes differ**; the developer has modified the file. For `replace`, the plugin skips the file and writes a warning
   to stderr. For `preserve`, the file is always skipped regardless of hash.
 
 `append` does not compare hashes; instead it diffs the stub lines against the destination and inserts only the missing
 ones at their contextual position. The operation is therefore idempotent: repeated runs over a file that already
-contains every stub line are a no-op.
-On partial scaffold runs (`post-install-cmd`, `post-update-cmd`), `append` and `prepend` are also skipped at the
-scaffolder level for files already recorded in the lockfile as a performance optimisation; the line-diff guarantees
-correctness even without that skip.
+contains every stub line are a no-op. On partial scaffold runs (`post-install-cmd`, `post-update-cmd`), `append` and
+`prepend` are also skipped at the scaffolder level for files already recorded in the lockfile as a performance
+optimisation; the line-diff guarantees correctness even without that skip.
 
 ## replace
 
-Intended for configuration files that the scaffold system owns. The developer is expected to leave
-these files as-is or accept that custom changes may be warned about on re-scaffold.
+Intended for configuration files that the scaffold system owns. The developer is expected to leave these files as-is or
+accept that custom changes may be warned about on re-scaffold.
 
 ```json
-"config/params.php": {
-    "source": "stubs/config/params.php",
-    "mode": "replace"
+{
+    "copy": [{"from": "stubs/config/params.php", "to": "config/params.php"}],
+    "modes": {"config/params.php": "replace"}
 }
 ```
 
 ## preserve
 
-Intended for files that provide sensible defaults but are designed to be customised by the developer.
-Once written, the file is never touched again by the scaffold process.
+Intended for files that provide sensible defaults but are designed to be customised by the developer. Once written, the
+file is never touched again by the scaffold process.
 
 ```json
-"config/db.php": {
-    "source": "stubs/config/db.php",
-    "mode": "preserve"
+{
+    "copy": [{"from": "stubs/config/db.php", "to": "config/db.php"}],
+    "modes": {"config/db.php": "preserve"}
 }
 ```
 
@@ -58,10 +57,10 @@ Once written, the file is never touched again by the scaffold process.
 
 Idempotent contextual line merge. The plugin reads both the stub and the destination, splits each on `\n` (after
 trimming the trailing newline), and inserts the stub lines missing from the destination at their contextual position,
-aligned against shared anchor lines (LCS). Presence is order-independent: a destination that contains every stub line
-in a different order is left untouched. Existing lines keep their original terminators (mixed EOLs included); inserted
-lines use the destination's dominant EOL. Repeated runs over a destination that already contains every stub line are
-a no-op (`ApplyOutcome::Skipped`); developer-added lines are never removed or reordered.
+aligned against shared anchor lines (LCS). Presence is order-independent: a destination that contains every stub line in
+a different order is left untouched. Existing lines keep their original terminators (mixed EOLs included); inserted
+lines use the destination's dominant EOL. Repeated runs over a destination that already contains every stub line are a
+no-op (`ApplyOutcome::Skipped`); developer-added lines are never removed or reordered.
 
 Use it for line-based, comment-tolerant files where the destination may already contain the stub content (because the
 project follows the same baseline) or where the developer routinely adds project-specific entries:
@@ -71,9 +70,9 @@ project follows the same baseline) or where the developer routinely adds project
 - Environment variable lists, plain-text allowlists
 
 ```json
-".gitignore": {
-    "source": "stubs/gitignore-additions.txt",
-    "mode": "append"
+{
+    "copy": [{"from": "stubs/gitignore-additions.txt", "to": ".gitignore"}],
+    "modes": {".gitignore": "append"}
 }
 ```
 
@@ -82,20 +81,20 @@ project follows the same baseline) or where the developer routinely adds project
 
 ## prepend
 
-Prepends the stub content before the existing destination content.
-Useful for inserting PHP `declare(strict_types=1)` headers, autoload includes, or licence headers.
+Prepends the stub content before the existing destination content. Useful for inserting PHP `declare(strict_types=1)`
+headers, autoload includes, or licence headers.
 
 ```json
-"bootstrap/web.php": {
-    "source": "stubs/bootstrap-header.php",
-    "mode": "prepend"
+{
+    "copy": [{"from": "stubs/bootstrap-header.php", "to": "bootstrap/web.php"}],
+    "modes": {"bootstrap/web.php": "prepend"}
 }
 ```
 
 ## --force reapply workflow
 
-When a `replace` file has been user-modified, the scaffold process warns and skips it.
-To intentionally overwrite the file with the current stub, use the console command:
+When a `replace` file has been user-modified, the scaffold process warns and skips it. To intentionally overwrite the
+file with the current stub, use the console command:
 
 ```bash
 vendor/bin/scaffold reapply config/params.php --force

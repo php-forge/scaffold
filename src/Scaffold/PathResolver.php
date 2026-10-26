@@ -2,7 +2,7 @@
 
 declare(strict_types=1);
 
-namespace yii\scaffold\Scaffold;
+namespace PHPForge\Scaffold\Scaffold;
 
 use RuntimeException;
 
@@ -78,7 +78,7 @@ final class PathResolver
      * versions.
      *
      * @param string $vendorDir Absolute path to the Composer vendor directory.
-     * @param string $providerName Provider package name (for example, `yii2-extensions/app-base`).
+     * @param string $providerName Provider package name (for example, `php-forge/baseline`).
      * @param mixed $providerLock Decoded `providers.<name>` entry from `scaffold-lock.json`, when present.
      * @param string $projectRoot Absolute path to the project root; required to expand relative lock paths. Pass an
      * empty string only when the caller knows that lock-recorded paths are absolute (legacy).

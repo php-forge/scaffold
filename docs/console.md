@@ -1,16 +1,16 @@
 # Console commands
 
-The scaffold plugin ships a standalone [Symfony Console](https://symfony.com/doc/current/components/console.html) CLI
-at `vendor/bin/scaffold`. It works in any PHP project (Yii2, Yii3, Laravel, Symfony, plain PHP) with no framework
-bootstrap required; the binary starts directly from Composer's autoloader.
+The scaffold plugin ships a standalone [Symfony Console](https://symfony.com/doc/current/components/console.html) CLI at
+`vendor/bin/scaffold`. It works in any PHP project (Yii2, Yii3, Laravel, Symfony, plain PHP) with no framework bootstrap
+required; the binary starts directly from Composer's autoloader.
 
-Run `vendor/bin/scaffold list` to discover every available command; each entry below also responds to
-`--help` for detailed option documentation.
+Run `vendor/bin/scaffold list` to discover every available command; each entry below also responds to `--help` for
+detailed option documentation.
 
 ## vendor/bin/scaffold status
 
-Reads `scaffold-lock.json` and compares the recorded hash of every tracked file to its current on-disk hash.
-Outputs a status table.
+Reads `scaffold-lock.json` and compares the recorded hash of every tracked file to its current on-disk hash. Outputs a
+status table.
 
 ```bash
 vendor/bin/scaffold status
@@ -21,10 +21,10 @@ Example output:
 ```text
 File                                     Provider                       Mode       Status
 --------------------------------------------------------------------------------------------
-config/params.php                        yii2-extensions/app-base       replace    synced
-config/web.php                           yii2-extensions/app-base       preserve   synced
-.env.example                             yii2-extensions/app-base       append     modified
-docker/nginx/nginx.conf                  yii2-extensions/app-nginx      replace    missing
+config/params.php                        php-forge/baseline             replace    synced
+config/web.php                           php-forge/baseline             preserve   synced
+.env.example                             php-forge/baseline             append     modified
+docker/nginx/nginx.conf                  php-forge/coding-standard      replace    missing
 ```
 
 | Status     | Meaning                                                        |
@@ -42,9 +42,9 @@ vendor/bin/scaffold diff config/params.php
 ```
 
 The output starts with `--- a/<file>` / `+++ b/<file>` headers followed by `@@` hunk headers with three lines of
-context. Lines present only in the stub are prefixed with `-`, and lines present only in the current file with `+`.
-On ANSI-capable terminals the diff is colorized (bold headers, cyan hunks, green additions, red removals); pass
-`--no-ansi` to force plain output.
+context. Lines present only in the stub are prefixed with `-`, and lines present only in the current file with `+`. On
+ANSI-capable terminals the diff is colorized (bold headers, cyan hunks, green additions, red removals); pass `--no-ansi`
+to force plain output.
 
 ```diff
 --- a/config/params.php
@@ -63,7 +63,7 @@ Re-copies stubs from `vendor/` to the project, updating `scaffold-lock.json` has
 vendor/bin/scaffold reapply config/params.php
 
 # reapply all files from one provider
-vendor/bin/scaffold reapply --provider=yii2-extensions/app-base
+vendor/bin/scaffold reapply --provider=php-forge/baseline
 
 # reapply all tracked files
 vendor/bin/scaffold reapply
@@ -72,13 +72,13 @@ vendor/bin/scaffold reapply
 vendor/bin/scaffold reapply config/params.php --force
 ```
 
-Without `--force`, files whose on-disk hash differs from the lock hash are reported and skipped.
-With `--force`, user-modified files are overwritten and the lock hash is updated.
+Without `--force`, files whose on-disk hash differs from the lock hash are reported and skipped. With `--force`,
+user-modified files are overwritten and the lock hash is updated.
 
 ## vendor/bin/scaffold eject `<file>` `[--yes]`
 
-Removes a file entry from `scaffold-lock.json` without deleting the file from disk.
-After ejection the file is no longer managed by scaffold.
+Removes a file entry from `scaffold-lock.json` without deleting the file from disk. After ejection the file is no longer
+managed by scaffold.
 
 ```bash
 # preview what would happen
@@ -103,8 +103,8 @@ Example output:
 ```text
 Provider                                     Files
 ----------------------------------------------------
-yii2-extensions/app-base                     4
-yii2-extensions/app-nginx                    2
+php-forge/baseline                           4
+php-forge/coding-standard                    2
 ```
 
 ## Typical post-install workflow

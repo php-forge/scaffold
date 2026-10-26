@@ -2,14 +2,14 @@
 
 declare(strict_types=1);
 
-namespace yii\scaffold\Scaffold;
+namespace PHPForge\Scaffold\Scaffold;
 
 use Composer\IO\IOInterface;
 use Composer\Package\PackageInterface;
+use PHPForge\Scaffold\Manifest\{FileMode, ManifestLoader};
+use PHPForge\Scaffold\Scaffold\Lock\LockFile;
+use PHPForge\Scaffold\Scaffold\Modes\{AppendMode, ApplyOutcome, ModeInterface, PrependMode, PreserveMode, ReplaceMode};
 use Throwable;
-use yii\scaffold\Manifest\{FileMode, ManifestLoader};
-use yii\scaffold\Scaffold\Lock\LockFile;
-use yii\scaffold\Scaffold\Modes\{AppendMode, ApplyOutcome, ModeInterface, PrependMode, PreserveMode, ReplaceMode};
 
 use function is_array;
 use function is_string;

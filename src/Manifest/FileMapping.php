@@ -2,7 +2,7 @@
 
 declare(strict_types=1);
 
-namespace yii\scaffold\Manifest;
+namespace PHPForge\Scaffold\Manifest;
 
 /**
  * Immutable value object representing a single file mapping from a scaffold provider.

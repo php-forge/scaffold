@@ -2,7 +2,7 @@
 
 declare(strict_types=1);
 
-namespace yii\scaffold;
+namespace PHPForge\Scaffold;
 
 use Composer\Composer;
 use Composer\IO\IOInterface;

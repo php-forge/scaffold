@@ -2,10 +2,10 @@
 
 declare(strict_types=1);
 
-namespace yii\scaffold\Services;
+namespace PHPForge\Scaffold\Services;
 
-use yii\scaffold\Console\{ExitCode, OutputWriter};
-use yii\scaffold\Scaffold\Lock\LockFile;
+use PHPForge\Scaffold\Console\{ExitCode, OutputWriter};
+use PHPForge\Scaffold\Scaffold\Lock\LockFile;
 
 use function array_fill_keys;
 use function array_keys;

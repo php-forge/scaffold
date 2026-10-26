@@ -2,16 +2,16 @@
 
 declare(strict_types=1);
 
-namespace yii\scaffold;
+namespace PHPForge\Scaffold;
 
 use Composer\EventDispatcher\EventSubscriberInterface;
 use Composer\IO\IOInterface;
 use Composer\Script\{Event, ScriptEvents};
+use PHPForge\Scaffold\Manifest\{ManifestExpander, ManifestLoader, ManifestSchema};
+use PHPForge\Scaffold\Scaffold\{Applier, Scaffolder};
+use PHPForge\Scaffold\Scaffold\Lock\{Hasher, LockFile};
+use PHPForge\Scaffold\Security\{PackageAllowlist, PathValidator};
 use Throwable;
-use yii\scaffold\Manifest\{ManifestExpander, ManifestLoader, ManifestSchema};
-use yii\scaffold\Scaffold\{Applier, Scaffolder};
-use yii\scaffold\Scaffold\Lock\{Hasher, LockFile};
-use yii\scaffold\Security\{PackageAllowlist, PathValidator};
 
 use function is_array;
 use function is_string;
