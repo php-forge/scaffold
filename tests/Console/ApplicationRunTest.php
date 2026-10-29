@@ -225,10 +225,11 @@ final class ApplicationRunTest
             1,
             "Exit code of a pending write with '--exit-code' must be '1'.",
         );
-        Assert::string(
-            $tester->getDisplay())->contains('+a2',
-            "Diff must print the '+a2' line.",
-        );
+        Assert::string($tester->getDisplay())
+            ->contains(
+                '+a2',
+                "Diff must print the '+a2' line.",
+            );
         FileAssert::contentSame(
             "{$this->tempDir}/a.txt",
             "a\n",

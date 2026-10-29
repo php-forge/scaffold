@@ -1,7 +1,7 @@
 # Testing
 
-This package provides a consistent set of [Composer](https://getcomposer.org/) scripts for local validation. Install
-the development dependencies first:
+This package provides a consistent set of [Composer](https://getcomposer.org/) scripts for local validation. Install the
+development dependencies first:
 
 ```bash
 composer install
@@ -32,9 +32,9 @@ The Testo configuration lives in `testo.php` and defines two suites:
   [Real Composer tests](#real-composer-tests)).
 
 Both suites fail a test on any PHP warning, notice or deprecation, and on a test without assertions
-(`tests/Support/StrictTestPlugin.php`). Filesystem failures are exercised against the real filesystem (a directory
-where a file is expected, a regular file as a parent directory, a missing source, `chmod 0000`), without function
-mocks; the `chmod` cases are skipped on Windows and when running as root.
+(`tests/Support/StrictTestPlugin.php`). Filesystem failures are exercised against the real filesystem (a directory where
+a file is expected, a regular file as a parent directory, a missing source, `chmod 0000`), without function mocks; the
+`chmod` cases are skipped on Windows and when running as root.
 
 ## Automated refactoring (Rector)
 
@@ -128,10 +128,10 @@ CI runs the suites on PHP 8.3, 8.4 and 8.5, on Ubuntu and Windows, and uploads t
 
 ### Real Composer tests
 
-The `Composer` suite covers the plugin lifecycle and the provider integration that an in-process test cannot
-reproduce: `composer install`, `update` and `create-project` against a snapshot of this working tree and a
-provider fixture, offline. The harness uses the `COMPOSER_BINARY` environment variable when set; otherwise it looks
-for `composer.phar` and then `composer` on `PATH`. When none is available, every test of the suite is skipped.
+The `Composer` suite covers the plugin lifecycle and the provider integration that an in-process test cannot reproduce:
+`composer install`, `update` and `create-project` against a snapshot of this working tree and a provider fixture,
+offline. The harness uses the `COMPOSER_BINARY` environment variable when set; otherwise it looks for `composer.phar`
+and then `composer` on `PATH`. When none is available, every test of the suite is skipped.
 
 Run only this suite:
 

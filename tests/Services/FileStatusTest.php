@@ -15,7 +15,8 @@ use Testo\Test;
 #[Test]
 #[Covers(FileStatus::class)]
 final class FileStatusTest
-{    public function summaryOrderListsEveryCaseOnceInReportOrder(): void
+{
+    public function summaryOrderListsEveryCaseOnceInReportOrder(): void
     {
         Assert::same(
             FileStatus::summaryOrder(),

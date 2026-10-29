@@ -237,7 +237,8 @@ final class LockFileTest
         Expect::exception(RuntimeException::class)
             ->withMessageMatchingRegex(
                 '/^' . preg_quote(
-                    Message::LOCK_UNWRITABLE->getMessage($lock->getPath()) . ' Reason: file_put_contents(', '/',
+                    Message::LOCK_UNWRITABLE->getMessage($lock->getPath()) . ' Reason: file_put_contents(',
+                    '/',
                 )
                 . '.+\): Failed to open stream: No such file or directory\.$/',
             );

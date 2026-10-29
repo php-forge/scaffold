@@ -112,8 +112,10 @@ final class ScaffolderTest
             $builder,
             ['php-forge/old-provider'],
             [
-                self::provider('php-forge/old-provider',
-                $manifest)
+                self::provider(
+                    'php-forge/old-provider',
+                    $manifest
+                ),
             ],
         );
 
@@ -127,8 +129,10 @@ final class ScaffolderTest
             $builder,
             ['php-forge/new-provider'],
             [
-                self::provider('php-forge/new-provider',
-                $manifest),
+                self::provider(
+                    'php-forge/new-provider',
+                    $manifest
+                ),
             ],
         );
 
@@ -374,8 +378,10 @@ final class ScaffolderTest
             $builder,
             ['php-forge/test'],
             [
-                self::provider('php-forge/test',
-                ['copy' => ['app.php']]),
+                self::provider(
+                    'php-forge/test',
+                    ['copy' => ['app.php']]
+                ),
             ],
         );
 

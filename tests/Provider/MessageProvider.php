@@ -131,8 +131,8 @@ final class MessageProvider
             ],
             'MANIFEST_KEY_UNKNOWN' => [
                 Message::MANIFEST_KEY_UNKNOWN,
-                ['mdoes', 'copy, exclude, merge, modes'],
-                'Manifest contains unknown key "mdoes". Allowed keys: copy, exclude, merge, modes.',
+                ['mode', 'copy, exclude, merge, modes'],
+                'Manifest contains unknown key "mode". Allowed keys: copy, exclude, merge, modes.',
             ],
             'MANIFEST_MAP_NOT_OBJECT' => [
                 Message::MANIFEST_MAP_NOT_OBJECT,
