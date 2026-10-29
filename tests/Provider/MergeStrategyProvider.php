@@ -75,6 +75,26 @@ final class MergeStrategyProvider
             "[numbers]\n1 = one\n\n[numbers]\n2 = consumer\n",
             "[numbers]\n1 = one\n\n[numbers]\n2 = consumer\n",
         ];
+        yield 'header with a trailing semicolon comment keeps its consumer values' => [
+            "[numbers]\nsize = 2\n",
+            "[numbers] ; local settings\nsize = 4\n",
+            "[numbers] ; local settings\nsize = 4\n",
+        ];
+        yield 'missing key lands in a section whose header has a trailing hash comment' => [
+            "[numbers]\nsize = 2\nmode = x\n",
+            "[numbers]# local\nsize = 4\n",
+            "[numbers]# local\nsize = 4\nmode = x\n",
+        ];
+        yield 'appended section keeps the trailing comment of its header' => [
+            "[*.md] ; docs\nb = 2\n",
+            "[*]\n",
+            "[*]\n\n[*.md] ; docs\nb = 2\n",
+        ];
+        yield 'text after a closing bracket that is no comment makes no header' => [
+            "[a] x\nk = 1\n",
+            "root = true\n",
+            "root = true\nk = 1\n",
+        ];
         yield 'comment lead travels with its appended section' => [
             "[*]\na = 1\n\n# Markdown\n[*.md]\nb = 2\n",
             "[*]\na = 1\n",

@@ -138,18 +138,6 @@ final class IniMergeStrategy extends AbstractLineMergeStrategy
     }
 
     /**
-     * Returns whether the trimmed line is a `[section]` header.
-     *
-     * @param string $trimmed Trimmed line.
-     *
-     * @return bool `true` when the line starts with `[` and ends with `]`.
-     */
-    private static function isHeader(string $trimmed): bool
-    {
-        return preg_match('/^\[.*\]$/', $trimmed) === 1;
-    }
-
-    /**
      * Returns the lower-cased key of a trimmed `key = value` line, or `null` for any other line.
      *
      * @param string $trimmed Trimmed line.
@@ -158,7 +146,7 @@ final class IniMergeStrategy extends AbstractLineMergeStrategy
      */
     private static function keyOf(string $trimmed): string|null
     {
-        if ($trimmed === '' || self::isComment($trimmed) || self::isHeader($trimmed)) {
+        if ($trimmed === '' || self::isComment($trimmed) || self::sectionId($trimmed) !== null) {
             return null;
         }
 
@@ -185,8 +173,10 @@ final class IniMergeStrategy extends AbstractLineMergeStrategy
         $headers = [];
 
         foreach ($lines as $index => $line) {
-            if (self::isHeader(trim($line))) {
-                $headers[$index] = $line;
+            $id = self::sectionId(trim($line));
+
+            if ($id !== null) {
+                $headers[$index] = ['id' => $id, 'line' => $line];
             }
         }
 
@@ -244,8 +234,8 @@ final class IniMergeStrategy extends AbstractLineMergeStrategy
             }
 
             $sections[] = [
-                'id' => trim($header),
-                'header' => $header,
+                'id' => $header['id'],
+                'header' => $header['line'],
                 'lead' => array_slice($lines, $leadStart, $headerIndex - $leadStart),
                 'body' => $body,
                 'keys' => $keys,
@@ -259,5 +249,17 @@ final class IniMergeStrategy extends AbstractLineMergeStrategy
             'preambleLength' => $preambleLength,
             'sections' => $sections,
         ];
+    }
+
+    /**
+     * Returns the identity of a trimmed `[section]` header, which is the header without a trailing `#` or `;` comment.
+     *
+     * @param string $trimmed Trimmed line.
+     *
+     * @return string|null Header up to its closing `]`, or `null` when the line is no section header.
+     */
+    private static function sectionId(string $trimmed): string|null
+    {
+        return preg_match('/^(\[.*\])\s*(?:[#;].*)?$/', $trimmed, $matches) === 1 ? $matches[1] : null;
     }
 }
