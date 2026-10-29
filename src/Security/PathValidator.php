@@ -4,47 +4,83 @@ declare(strict_types=1);
 
 namespace PHPForge\Scaffold\Security;
 
+use PHPForge\Scaffold\Exception\Message;
+use PHPForge\Scaffold\Filesystem;
 use RuntimeException;
 
-use function sprintf;
-
 /**
- * Validates scaffold paths against path traversal and absolute path injection.
- *
- * Both destination (project-relative) and source (provider-relative) paths are validated before any filesystem
- * operation. Rejects paths containing `..` as a segment and paths that begin with a directory separator.
+ * Rejects source and destination paths that are absolute, contain `..` segments, escape their root through a symlink,
+ * or address the reserved `scaffold-lock.json`.
  */
 final class PathValidator
 {
+    /**
+     * Maximum number of symlink hops followed when resolving a dangling symlink leaf, as the `ELOOP` limit of Linux.
+     */
+    private const int MAX_SYMLINK_HOPS = 40;
+
+    /**
+     * Destination reserved for the lock file written by the plugin.
+     */
+    private const string RESERVED_DESTINATION = 'scaffold-lock.json';
+
+    /**
+     * Returns whether `$path` contains a `..` segment, splitting on forward slashes and backslashes.
+     *
+     * @param string $path Path to check.
+     *
+     * @return bool `true` when a segment is `..`, `false` otherwise.
+     */
+    public static function hasTraversal(string $path): bool
+    {
+        return in_array('..', explode('/', str_replace('\\', '/', $path)), true);
+    }
+
+    /**
+     * Returns whether `$path` starts with a directory separator or a Windows drive letter.
+     *
+     * @param string $path Path to check.
+     *
+     * @return bool `true` when the path is absolute or drive-qualified, `false` otherwise.
+     */
+    public static function isAbsolute(string $path): bool
+    {
+        return str_starts_with($path, '/')
+            || str_starts_with($path, '\\')
+            || preg_match('/^[A-Za-z]:/', $path) === 1;
+    }
+
     /**
      * Validates that a destination path does not escape the project root.
      *
      * @param string $destination Relative destination path declared in the manifest.
      * @param string $projectRoot Absolute path to the project root directory.
      *
-     * @throws RuntimeException on path traversal or absolute path attempt.
+     * @throws RuntimeException when the project root does not exist, or the destination is absolute, contains `..`,
+     * escapes the root through a symlink, or is reserved.
+     *
+     * @return string Canonical absolute path of the project root.
      */
-    public function validateDestination(string $destination, string $projectRoot): void
+    public function validateDestination(string $destination, string $projectRoot): string
     {
         $this->assertRelative($destination, 'destination');
         $this->assertNoTraversal($destination, 'destination');
+        $this->assertNotReserved($destination);
 
         $realRoot = realpath($projectRoot);
 
         if ($realRoot === false) {
             throw new RuntimeException(
-                sprintf('Project root does not exist or is not accessible: "%s".', $projectRoot),
+                Message::PATH_PROJECT_ROOT_INACCESSIBLE->getMessage($projectRoot),
             );
         }
 
-        /**
-         * After assertRelative + assertNoTraversal the relative segment cannot escape the base, so normalizePath's
-         * literal concatenation is guaranteed to stay under $realRoot; the remaining risk is a symlinked ancestor,
-         * which assertNoSymlinkEscape covers below.
-         */
+        // A relative path without '..' segments stays under $realRoot; only symlinks can make it escape.
         $normalized = $this->normalizePath($realRoot, $destination);
 
         $this->assertNoSymlinkEscape($normalized, $realRoot, 'destination', $destination);
+
+        return $realRoot;
     }
 
     /**
@@ -53,9 +89,12 @@ final class PathValidator
      * @param string $source Relative source path declared in the manifest.
      * @param string $providerRoot Absolute path to the provider root inside vendor.
      *
-     * @throws RuntimeException on path traversal or absolute path attempt.
+     * @throws RuntimeException when the provider root does not exist, or the source is absolute, contains `..` or
+     * escapes the root through a symlink.
+     *
+     * @return string Canonical absolute path of the provider root.
      */
-    public function validateSource(string $source, string $providerRoot): void
+    public function validateSource(string $source, string $providerRoot): string
     {
         $this->assertRelative($source, 'source');
         $this->assertNoTraversal($source, 'source');
@@ -64,34 +103,82 @@ final class PathValidator
 
         if ($realRoot === false) {
             throw new RuntimeException(
-                sprintf('Provider root does not exist or is not accessible: "%s".', $providerRoot),
+                Message::PATH_PROVIDER_ROOT_INACCESSIBLE->getMessage($providerRoot),
             );
         }
 
-        /**
-         * See validateDestination: the redundant containment check was removed because normalizePath's literal
-         * concatenation cannot escape $realRoot after assertRelative + assertNoTraversal; symlink ancestors are
-         * still verified below.
-         */
+        // A relative path without '..' segments stays under $realRoot; only symlinks can make it escape.
         $normalized = $this->normalizePath($realRoot, $source);
 
         $this->assertNoSymlinkEscape($normalized, $realRoot, 'source', $source);
+
+        return $realRoot;
     }
 
     /**
-     * Walks up from the deepest existing ancestor of `$normalized` and rejects the path if that ancestor resolves
-     * outside `$realRoot` via a symlink.
+     * Rejects `$normalized` when it starts a symlink chain that exceeds `MAX_SYMLINK_HOPS` hops, or in which a target
+     * parent directory cannot be resolved or lies outside `$realRoot`.
      *
-     * Checking only `realpath(dirname($normalized))` misses the case where the immediate parent does not yet exist but
-     * a higher-level ancestor is a symlink that escapes the root. This method finds the deepest path segment that
-     * already exists on disk, resolves it, and enforces containment.
+     * @param string $normalized Absolute, traversal-free path whose `realpath()` failed.
+     * @param string $realRoot Resolved root boundary (output of `realpath()`).
+     * @param string $context Human-readable label for error messages (`'source'` or `'destination'`).
+     * @param string $originalPath Original user-supplied path, used only in the exception message.
+     *
+     * @throws RuntimeException when the symlink target escapes `$realRoot` or cannot be resolved.
+     */
+    private function assertDanglingSymlinkContained(
+        string $normalized,
+        string $realRoot,
+        string $context,
+        string $originalPath,
+    ): void {
+        $current = $normalized;
+        $hops = 0;
+
+        while (is_link($current)) {
+            $target = Filesystem::readLink(
+                $current,
+                Message::PATH_SYMLINK_UNRESOLVABLE->getMessage(ucfirst($context), $originalPath),
+            );
+
+            if (++$hops > self::MAX_SYMLINK_HOPS) {
+                throw new RuntimeException(
+                    Message::PATH_SYMLINK_UNRESOLVABLE->getMessage(ucfirst($context), $originalPath),
+                );
+            }
+
+            if (!self::isAbsolute($target)) {
+                $target = dirname($current) . DIRECTORY_SEPARATOR . $target;
+            }
+
+            $parent = realpath(dirname($target));
+
+            if ($parent === false) {
+                throw new RuntimeException(
+                    Message::PATH_SYMLINK_UNRESOLVABLE->getMessage(ucfirst($context), $originalPath),
+                );
+            }
+
+            if (!str_starts_with($parent . DIRECTORY_SEPARATOR, $realRoot . DIRECTORY_SEPARATOR)) {
+                throw new RuntimeException(
+                    Message::PATH_SYMLINK_ESCAPE->getMessage(ucfirst($context), $originalPath),
+                );
+            }
+
+            $current = $parent . DIRECTORY_SEPARATOR . basename($target);
+        }
+    }
+
+    /**
+     * Rejects `$normalized` when the path itself, the target of a dangling symlink leaf, or any existing ancestor
+     * resolves outside `$realRoot`.
      *
      * @param string $normalized Absolute, traversal-free path to validate.
      * @param string $realRoot Resolved root boundary (output of `realpath()`).
      * @param string $context Human-readable label for error messages (`'source'` or `'destination'`).
      * @param string $originalPath Original user-supplied path, used only in the exception message.
      *
-     * @throws RuntimeException when a symlink ancestor escapes `$realRoot`.
+     * @throws RuntimeException when the path escapes `$realRoot` through a symlink or a symlink cannot be resolved.
      */
     private function assertNoSymlinkEscape(
         string $normalized,
@@ -104,12 +191,14 @@ final class PathValidator
         if ($resolved !== false) {
             if (!str_starts_with($resolved . DIRECTORY_SEPARATOR, $realRoot . DIRECTORY_SEPARATOR)) {
                 throw new RuntimeException(
-                    sprintf('%s path escapes the root via symlink: "%s".', ucfirst($context), $originalPath),
+                    Message::PATH_SYMLINK_ESCAPE->getMessage(ucfirst($context), $originalPath),
                 );
             }
 
             return;
         }
+
+        $this->assertDanglingSymlinkContained($normalized, $realRoot, $context, $originalPath);
 
         $dir = dirname($normalized);
 
@@ -121,7 +210,7 @@ final class PathValidator
                 && !str_starts_with($resolved . DIRECTORY_SEPARATOR, $realRoot . DIRECTORY_SEPARATOR)
             ) {
                 throw new RuntimeException(
-                    sprintf('%s path escapes the root via symlink: "%s".', ucfirst($context), $originalPath),
+                    Message::PATH_SYMLINK_ESCAPE->getMessage(ucfirst($context), $originalPath),
                 );
             }
 
@@ -139,59 +228,65 @@ final class PathValidator
      */
     private function assertNoTraversal(string $path, string $context): void
     {
-        /**
-         * Normalize both separators to `/` then split; `explode` always returns array<string>, avoiding the
-         * defensive false-branch that `preg_split` would have produced for malformed input.
-         */
-        $segments = explode('/', str_replace('\\', '/', $path));
+        if (self::hasTraversal($path)) {
+            throw new RuntimeException(
+                Message::PATH_TRAVERSAL->getMessage($context, $path),
+            );
+        }
+    }
 
-        foreach ($segments as $segment) {
-            if ($segment === '..') {
+    /**
+     * Asserts that `$destination` addresses neither `scaffold-lock.json` nor a path below it, ignoring case so that
+     * case-insensitive filesystems cannot bypass the check.
+     *
+     * @param string $destination Relative destination path declared in the manifest.
+     *
+     * @throws RuntimeException when the destination is reserved.
+     */
+    private function assertNotReserved(string $destination): void
+    {
+        foreach (explode('/', str_replace('\\', '/', $destination)) as $segment) {
+            if ($segment === '' || $segment === '.') {
+                continue;
+            }
+
+            if (strcasecmp($segment, self::RESERVED_DESTINATION) === 0) {
                 throw new RuntimeException(
-                    sprintf('Path traversal detected in %s: "%s".', $context, $path),
+                    Message::PATH_RESERVED->getMessage($destination),
                 );
             }
+
+            return;
         }
     }
 
     /**
      * Asserts that a path is relative (does not start with a directory separator or drive letter).
      *
+     * @param string $path Path to check.
+     * @param string $context Path kind named in the error message (`destination` or `source`).
+     *
      * @throws RuntimeException when an absolute path is detected.
      */
     private function assertRelative(string $path, string $context): void
     {
-        if (
-            str_starts_with($path, '/')
-            || str_starts_with($path, '\\')
-            || preg_match('/^[A-Za-z]:/', $path) === 1
-        ) {
+        if (self::isAbsolute($path)) {
             throw new RuntimeException(
-                sprintf('Absolute path is not allowed in %s: "%s".', $context, $path),
+                Message::PATH_ABSOLUTE->getMessage($context, $path),
             );
         }
     }
 
     /**
-     * Normalizes a base + relative path without requiring the target to exist on disk.
-     *
-     * The relative path must have already passed traversal validation this method does not re-validate and assumes no
-     * `..` segments are present.
+     * Joins an absolute base and a relative path already checked for `..` segments, without touching the filesystem.
      *
      * @param string $base Absolute base path.
      * @param string $relative Relative path to combine with the base.
      *
-     * @return string Normalized absolute path combining the base and relative segments.
+     * @return string Absolute path without trailing separator.
      */
     private function normalizePath(string $base, string $relative): string
     {
-        // Windows-only normalisation: str_replace is a no-op on POSIX (separator is '/').
-        // @codeCoverageIgnoreStart
-        $normalizedRelative = str_replace('/', DIRECTORY_SEPARATOR, $relative);
-        // @codeCoverageIgnoreEnd
-
-        $combined = $base . DIRECTORY_SEPARATOR . $normalizedRelative;
-
-        return rtrim($combined, DIRECTORY_SEPARATOR);
+        return rtrim($base . DIRECTORY_SEPARATOR . $relative, DIRECTORY_SEPARATOR);
     }
 }

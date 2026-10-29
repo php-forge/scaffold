@@ -1,0 +1,30 @@
+# everything the provider ships, my own order and headers
+.settings
+.project
+.buildpath
+Thumbs.db
+.vscode
+vendor
+.vagrant
+.phpunit.result.cache
+.phpunit.cache
+
+# tooling
+.phpactor.*
+.idea
+package-lock.json
+node_modules
+nbproject
+.DS_Store
+.github/skills/**
+.github/prompts/**
+.github/instructions/**
+.github/copilot/**
+.github/copilot-instructions.md
+.github/agents/**
+composer.lock
+c3.php
+code_coverage
+.config/gh
+.codex
+.claude

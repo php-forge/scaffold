@@ -5,224 +5,89 @@ declare(strict_types=1);
 namespace PHPForge\Scaffold\Tests\Console\Command;
 
 use PHPForge\Scaffold\Console\Command\DiffCommand;
-use PHPForge\Scaffold\Scaffold\Lock\{Hasher, LockFile};
-use PHPForge\Scaffold\Tests\Support\TempDirectoryTrait;
-use PHPUnit\Framework\Attributes\Group;
-use PHPUnit\Framework\TestCase;
-use Symfony\Component\Console\Command\Command;
+use PHPForge\Scaffold\Tests\Support\{InspectionProject, TempDirectoryTrait};
 use Symfony\Component\Console\Tester\CommandTester;
-use Xepozz\InternalMocker\MockerState;
+use Testo\Assert;
+use Testo\Data\DataSet;
+use Testo\Lifecycle\{AfterTest, BeforeTest};
+use Testo\Test;
 
 use function chdir;
 use function getcwd;
 use function is_dir;
+use function str_contains;
 
 /**
- * Unit tests for the Symfony Console {@see DiffCommand} covering identical-content, divergent-content, and
- * untracked-file scenarios.
+ * Functional tests for the Symfony Console {@see DiffCommand} wiring the `file` argument and the output decoration
+ * to the diff service.
  */
-#[Group('scaffold')]
-#[Group('console-command')]
-final class DiffCommandTest extends TestCase
+#[Test]
+final class DiffCommandTest
 {
     use TempDirectoryTrait;
 
+    /**
+     * Working directory before the test, restored after it.
+     */
     private string $originalCwd = '';
 
-    public function testExecutePrintsAnsiColorsWhenOutputIsDecorated(): void
+    /**
+     * Ensures the diff of the named file is colored only when the output is decorated.
+     */
+    #[DataSet([true], 'decorated')]
+    #[DataSet([false], 'not decorated')]
+    public function colorsFollowTheOutputDecoration(bool $decorated): void
     {
-        $this->seedProviderAndFile(
-            destination: 'config/params.php',
-            sourceContent: "return ['a' => 1];\n",
-            currentContent: "return ['a' => 2];\n",
-        );
-
         $tester = new CommandTester(new DiffCommand());
 
-        $tester->execute(['file' => 'config/params.php'], ['decorated' => true]);
+        $exitCode = $tester->execute(['file' => 'config/params.php'], ['decorated' => $decorated]);
 
-        self::assertStringContainsString(
-            "\e[31m",
-            $tester->getDisplay(),
-            'Decorated output must colorize removed lines in red.',
-        );
-    }
-
-    public function testExecutePrintsDiffWhenContentsDiverge(): void
-    {
-        $this->seedProviderAndFile(
-            destination: 'config/params.php',
-            sourceContent: "return ['a' => 1];\n",
-            currentContent: "return ['a' => 2];\n",
-        );
-
-        $tester = new CommandTester(new DiffCommand());
-
-        $exitCode = $tester->execute(['file' => 'config/params.php']);
-
-        self::assertSame(
+        Assert::same(
+            $exitCode,
             0,
-            $exitCode,
-            'Diff command must return success exit code even when differences are found.',
+            "Exit code must be '0'.",
         );
-
-        $display = $tester->getDisplay();
-
-        self::assertStringContainsString(
-            "-return ['a' => 1];",
-            $display,
-            "Diff output must contain removed line prefixed with '-'.",
+        Assert::same(
+            str_contains($tester->getDisplay(), "\e["),
+            $decorated,
+            'Output must hold ANSI codes only when decorated.',
         );
-        self::assertStringContainsString(
-            "+return ['a' => 2];",
-            $display,
-            "Diff output must contain added line prefixed with '+'.",
+        Assert::string($tester->getDisplay())->ignoringAnsi()->contains(
+            "-return ['a' => 2];\n+return ['a' => 1];",
+            "Output must hold the diff of 'config/params.php'.",
+        )->notContains(
+            'config/other.php',
+            "Output must not hold the diff of 'config/other.php'.",
         );
     }
 
-    public function testExecutePrintsPlainDiffWhenOutputIsNotDecorated(): void
-    {
-        $this->seedProviderAndFile(
-            destination: 'config/params.php',
-            sourceContent: "return ['a' => 1];\n",
-            currentContent: "return ['a' => 2];\n",
-        );
-
-        $tester = new CommandTester(new DiffCommand());
-
-        $tester->execute(['file' => 'config/params.php']);
-
-        self::assertStringNotContainsString(
-            "\e[",
-            $tester->getDisplay(),
-            'Undecorated output must contain no ANSI escape codes.',
-        );
-    }
-
-    public function testExecuteReportsNoDifferencesWhenStubAndCurrentMatch(): void
-    {
-        $this->seedProviderAndFile(
-            destination: 'config/params.php',
-            sourceContent: "return [];\n",
-            currentContent: "return [];\n",
-        );
-
-        $tester = new CommandTester(new DiffCommand());
-
-        $exitCode = $tester->execute(['file' => 'config/params.php']);
-
-        self::assertSame(
-            0,
-            $exitCode,
-            'Diff command must return success exit code when no differences are found.',
-        );
-        self::assertStringContainsString(
-            'No differences found',
-            $tester->getDisplay(),
-            'Diff command must indicate when no differences are found.',
-        );
-    }
-
-    public function testExecuteReturnsErrorWhenFileIsNotTracked(): void
-    {
-        (new LockFile($this->tempDir))->write(['providers' => [], 'files' => []]);
-
-        $tester = new CommandTester(new DiffCommand());
-
-        $exitCode = $tester->execute(
-            ['file' => 'missing.php'],
-            ['capture_stderr_separately' => true],
-        );
-
-        self::assertSame(
-            1,
-            $exitCode,
-            'Diff command must return error exit code when file is not tracked.',
-        );
-        self::assertStringContainsString(
-            'not tracked',
-            $tester->getErrorOutput(),
-            'Diff command must indicate when file is not tracked.',
-        );
-    }
-
-    public function testExecuteReturnsFailureWhenGetcwdFails(): void
-    {
-        MockerState::addCondition(
-            'PHPForge\\Scaffold\\Console\\Command',
-            'getcwd',
-            [],
-            false,
-            default: true,
-        );
-
-        $tester = new CommandTester(new DiffCommand());
-
-        self::assertSame(
-            Command::FAILURE,
-            $tester->execute(['file' => 'config/params.php']),
-            'Diff command must return failure exit code when getcwd fails.',
-        );
-        self::assertStringContainsString(
-            'Unable to determine current working directory',
-            $tester->getDisplay(),
-            'Diff command must indicate when the current working directory cannot be determined.',
-        );
-    }
-
-    protected function setUp(): void
-    {
-        $this->originalCwd = (string) getcwd();
-
-        $this->setUpTempDirectory();
-
-        chdir($this->tempDir);
-    }
-
-    protected function tearDown(): void
+    /**
+     * Restores the working directory of the runner.
+     */
+    #[AfterTest]
+    public function restoreWorkingDirectory(): void
     {
         if ($this->originalCwd !== '' && is_dir($this->originalCwd)) {
             chdir($this->originalCwd);
         }
-
-        $this->tearDownTempDirectory();
     }
 
-    private function seedProviderAndFile(string $destination, string $sourceContent, string $currentContent): void
+    /**
+     * Saves the working directory, seeds two tracked files that diverge from their stubs and enters the project root.
+     */
+    #[BeforeTest(priority: -10)]
+    public function setUpProject(): void
     {
-        $providerRoot = "{$this->tempDir}/vendor/pkg/name";
-        $stubRelative = "stubs/{$destination}";
-        $stubPath = "{$providerRoot}/{$stubRelative}";
+        $this->originalCwd = (string) getcwd();
 
-        $this->ensureTestDirectory(dirname($stubPath));
+        (new InspectionProject($this->tempDir))
+            ->composer(['pkg/name'])
+            ->provider('pkg/name', ['config/params.php' => "return ['a' => 1];\n", 'config/other.php' => "b\n"])
+            ->file('config/params.php', "return ['a' => 2];\n")
+            ->file('config/other.php', "c\n")
+            ->track('config/params.php', 'pkg/name')
+            ->track('config/other.php', 'pkg/name');
 
-        file_put_contents($stubPath, $sourceContent);
-
-        $destAbsolute = "{$this->tempDir}/{$destination}";
-
-        $this->ensureTestDirectory(dirname($destAbsolute));
-
-        file_put_contents($destAbsolute, $currentContent);
-
-        $hash = (new Hasher())->hash($destAbsolute);
-
-        (new LockFile($this->tempDir))->write(
-            [
-                'providers' => [
-                    'pkg/name' => [
-                        'version' => '0.1.x-dev',
-                        'path' => 'vendor/pkg/name',
-                    ],
-                ],
-                'files' => [
-                    $destination => [
-                        'hash' => $hash,
-                        'provider' => 'pkg/name',
-                        'source' => $stubRelative,
-                        'mode' => 'replace',
-                    ],
-                ],
-            ],
-        );
+        chdir($this->tempDir);
     }
 }

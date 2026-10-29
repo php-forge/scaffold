@@ -10,7 +10,7 @@
 
 <p align="center">
     <a href="https://github.com/php-forge/scaffold/actions/workflows/build.yml" target="_blank">
-        <img src="https://img.shields.io/github/actions/workflow/status/php-forge/scaffold/build.yml?style=for-the-badge&label=PHPUnit&logo=github" alt="PHPUnit">
+        <img src="https://img.shields.io/github/actions/workflow/status/php-forge/scaffold/build.yml?style=for-the-badge&label=Testo&logo=github" alt="Testo">
     </a>
     <a href="https://dashboard.stryker-mutator.io/reports/github.com/php-forge/scaffold/main" target="_blank">
         <img src="https://img.shields.io/endpoint?style=for-the-badge&url=https%3A%2F%2Fbadge-api.stryker-mutator.io%2Fgithub.com%2Fphp-forge%2Fscaffold%2Fmain" alt="Mutation Testing">
@@ -39,47 +39,16 @@
 
 ```bash
 composer config allow-plugins.php-forge/scaffold true
-composer require php-forge/scaffold:^0.3
+composer require --dev php-forge/scaffold:^0.3
 ```
 
-Install your scaffold providers, then declare which are permitted to write files into your project:
+Require the providers and list, in order, the ones allowed to write files into the project:
 
 ```json
 {
-    "extra": {
-        "scaffold": {
-            "allowed-packages": [
-                "php-forge/baseline",
-                "php-forge/coding-standard"
-            ]
-        }
-    }
-}
-```
-
-Run `composer install` to trigger the scaffold process. Commit `scaffold-lock.json` to version control.
-
-To opt out of auto-trigger and manage updates manually via `vendor/bin/scaffold`, set `auto: false` (see
-[Configuration Reference](docs/configuration.md#auto)):
-
-```json
-{
-    "extra": {
-        "scaffold": {
-            "auto": false,
-            "allowed-packages": ["php-forge/baseline", "php-forge/coding-standard"]
-        }
-    }
-}
-```
-
-## Configuration
-
-Scaffold configuration for a project with `php-forge/baseline` and `php-forge/coding-standard` already installed:
-
-```json
-{
-    "require": {
+    "require-dev": {
+        "php-forge/baseline": "^0.2",
+        "php-forge/coding-standard": "^0.3",
         "php-forge/scaffold": "^0.3"
     },
     "config": {
@@ -89,40 +58,87 @@ Scaffold configuration for a project with `php-forge/baseline` and `php-forge/co
     },
     "extra": {
         "scaffold": {
-            "allowed-packages": [
-                "php-forge/baseline",
-                "php-forge/coding-standard"
-            ]
+            "allowed-packages": ["php-forge/baseline", "php-forge/coding-standard"]
         }
     }
 }
 ```
 
-## Console commands
+Run `composer install`. The plugin copies the provider files, merges the shared ones, writes `scaffold-lock.json` and
+prints one summary line:
 
-After `composer install`, the plugin ships a standalone Symfony Console CLI at `vendor/bin/scaffold` that works in any
-PHP project (Yii2, Yii3, Laravel, Symfony, plain PHP).
-
-| Command                                                            | What it does                                                                                                                                     |
-| ------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `vendor/bin/scaffold status`                                       | Prints a table comparing every tracked file's on-disk hash to the one recorded in `scaffold-lock.json` (`synced` / `modified` / `missing`).      |
-| `vendor/bin/scaffold providers`                                    | Lists every provider recorded in `scaffold-lock.json` and how many files each one contributed.                                                   |
-| `vendor/bin/scaffold diff <file>`                                  | Shows a line-by-line diff between the provider stub and the current on-disk file.                                                                |
-| `vendor/bin/scaffold reapply [file] [--force] [--provider=<name>]` | Re-copies stubs from `vendor/` to the project, updating lock hashes on success. Without `--force`, user-modified files are reported and skipped. |
-| `vendor/bin/scaffold eject <file> [--yes]`                         | Removes a file entry from `scaffold-lock.json` without deleting the file from disk. Without `--yes` only previews the change.                    |
-
-Typical post-install workflow:
-
-```bash
-vendor/bin/scaffold status                                      # what changed
-vendor/bin/scaffold diff config/params.php                      # review one file
-vendor/bin/scaffold reapply config/params.php --force           # accept stub version
-
-# or
-vendor/bin/scaffold eject config/params.php --yes               # keep yours, stop tracking
+```text
+[scaffold] 10 files written, 1 unchanged, 1 warning.
 ```
 
-See [`docs/console.md`](docs/console.md) for the full reference.
+Review the result with `git diff` and commit the files together with `scaffold-lock.json`.
+
+## Configuration
+
+| Setting                           | Default | Effect                                                                                            |
+| --------------------------------- | ------- | ------------------------------------------------------------------------------------------------- |
+| `extra.scaffold.allowed-packages` | `[]`    | Providers allowed to write files, in order; the later provider wins when two ship the same file.  |
+| `extra.scaffold.auto`             | `true`  | `false` disables the Composer hooks; apply the providers with `vendor/bin/scaffold sync` instead. |
+
+Providers choose a mode per file: `replace` (provider-owned, skipped once you edit it), `preserve` (seeded once, then
+yours), `append` (format-aware merge for `.editorconfig`, `.gitignore` and similar files) or `prepend`. The lock records
+the owner, the mode and two hashes per file:
+
+```json
+{
+    "providers": {
+        "php-forge/baseline": {
+            "version": "0.2.0",
+            "path": "vendor/php-forge/baseline"
+        }
+    },
+    "files": {
+        ".styleci.yml": {
+            "hash": "sha256:825f8c744ffbd2bc2369712e7192b8694129a8ecbc3fd91dc9300fccecf827bd",
+            "provider": "php-forge/baseline",
+            "source": "metadata/.styleci.yml",
+            "mode": "replace",
+            "stub-hash": "sha256:825f8c744ffbd2bc2369712e7192b8694129a8ecbc3fd91dc9300fccecf827bd"
+        }
+    }
+}
+```
+
+`hash` is the file as scaffold last left it and `stub-hash` the provider source at that moment, so scaffold can tell
+your edits apart from provider updates.
+
+## Console commands
+
+The plugin installs a standalone console application at `vendor/bin/scaffold`. Every command finds the project root by
+walking up to the nearest `composer.json`; the global `--working-dir` (`-d`) option starts the search elsewhere.
+
+| Command                                                                    | What it does                                                                                                           |
+| -------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------- |
+| `status [--format=table\|json] [--exit-code]`                              | Shows each file as `synced`, `pending`, `outdated`, `modified`, `conflict`, `missing`, `orphan`, `ejected` or `error`. |
+| `diff <file>\|--all [--exit-code]`                                         | Shows what applying the providers would change, as a unified diff from the current file.                               |
+| `reapply [<file>] [--provider=<name>] [--force] [--dry-run] [--exit-code]` | Applies the stubs of tracked files again; `--force` also takes user-modified, `preserve` and ejected files.            |
+| `eject <file> [--yes]`                                                     | Marks a file as yours; no run writes it again until `reapply <file> --force`.                                          |
+| `prune [--force] [--delete-modified] [--exit-code]`                        | Lists files no allowed provider ships anymore; `--force` deletes the unmodified ones and drops the entries.            |
+| `sync [--dry-run] [--exit-code] [--force]`                                 | Applies every allowed provider outside Composer, for `auto: false`, `--no-plugins` runs and bots.                      |
+| `providers`                                                                | Lists the providers recorded in `scaffold-lock.json` with their file counts.                                           |
+
+Typical workflow after `composer install` or `composer update`:
+
+```bash
+vendor/bin/scaffold status                         # what needs attention
+vendor/bin/scaffold diff --all                     # what applying the providers would change
+vendor/bin/scaffold reapply .styleci.yml --force   # take the provider version of a file you edited
+vendor/bin/scaffold eject .styleci.yml --yes       # or keep yours for good
+vendor/bin/scaffold prune                          # review files the providers no longer ship
+```
+
+Gate CI on drift between the committed files and the providers:
+
+```bash
+vendor/bin/scaffold status --exit-code
+```
+
+Upgrading from `yii2-extensions/scaffold` `0.2`? Read [UPGRADE.md](UPGRADE.md).
 
 ## Documentation
 
@@ -132,6 +148,7 @@ See [`docs/console.md`](docs/console.md) for the full reference.
 - 🔀 [File Modes](docs/modes.md)
 - 🖥️ [Console Commands](docs/console.md)
 - 🧪 [Testing Guide](docs/testing.md)
+- ⬆️ [Upgrade Guide](UPGRADE.md)
 
 ## Package information
 
@@ -141,9 +158,16 @@ See [`docs/console.md`](docs/console.md) for the full reference.
 
 ## Project status
 
+[![Codecov](https://img.shields.io/codecov/c/github/php-forge/scaffold.svg?style=for-the-badge&logo=codecov&logoColor=white&label=Coverage)](https://codecov.io/github/php-forge/scaffold)
 [![PHPStan Level Max](https://img.shields.io/badge/PHPStan-Level%20Max-4F5D95.svg?style=for-the-badge&logo=github&logoColor=white)](https://github.com/php-forge/scaffold/actions/workflows/static.yml)
 [![Quality](https://img.shields.io/github/actions/workflow/status/php-forge/scaffold/quality.yml?style=for-the-badge&label=Quality&logo=github)](https://github.com/php-forge/scaffold/actions/workflows/quality.yml)
 [![StyleCI](https://img.shields.io/badge/StyleCI-Passed-44CC11.svg?style=for-the-badge&logo=github&logoColor=white)](https://github.styleci.io/repos/1212894073?branch=main)
+
+## Built with AI
+
+[![Built with Claude Code](https://img.shields.io/badge/Built%20with-Claude%20Code-D97757.svg?style=for-the-badge&logo=claude&logoColor=white)](https://claude.com/claude-code)
+[![Reviewed by Codex](https://img.shields.io/badge/Reviewed%20by-Codex-10A37F.svg?style=for-the-badge&logo=openaigym&logoColor=white)](https://openai.com/codex)
+[![Reviewed by CodeRabbit](https://img.shields.io/badge/Reviewed%20by-CodeRabbit-FF570A.svg?style=for-the-badge&logo=coderabbit&logoColor=white)](https://www.coderabbit.ai)
 
 ## Our social networks
 

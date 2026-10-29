@@ -4,272 +4,85 @@ declare(strict_types=1);
 
 namespace PHPForge\Scaffold\Scaffold;
 
-use Composer\IO\IOInterface;
 use Composer\Package\PackageInterface;
-use PHPForge\Scaffold\Manifest\{FileMode, ManifestLoader};
+use PHPForge\Scaffold\Config\{ProjectConfig, ProviderPackage};
+use PHPForge\Scaffold\Console\{Message, OutputWriter};
+use PHPForge\Scaffold\Manifest\ManifestLoader;
 use PHPForge\Scaffold\Scaffold\Lock\LockFile;
-use PHPForge\Scaffold\Scaffold\Modes\{AppendMode, ApplyOutcome, ModeInterface, PrependMode, PreserveMode, ReplaceMode};
-use Throwable;
-
-use function is_array;
-use function is_string;
-use function rtrim;
-use function sprintf;
-use function str_replace;
-use function str_starts_with;
-use function stripos;
-use function strlen;
-use function substr;
 
 /**
- * Orchestrates the full scaffold lifecycle: provider resolution, manifest loading, mode application, and lock writing.
+ * Applies every authorized provider's files to the project inside a Composer run by converting Composer's packages
+ * for the Composer-free {@see ScaffoldRunner}.
  */
 final readonly class Scaffolder
 {
     /**
-     * @var array<string, ModeInterface> Pre-instantiated mode implementations keyed by the backing value of
-     * {@see FileMode} for efficient resolution during scaffolding.
+     * @param ManifestLoader $loader Loads provider manifests into file mappings.
+     * @param FileApplier $applier Validates and applies each mapping.
+     * @param LockFile $lockFile Lock file of the project.
+     * @param OutputWriter $out Output sink for notices and warnings.
+     * @param ScaffoldSummary $summary Counters that the runs of this scaffolder update.
      */
-    private array $modes;
-
     public function __construct(
         private ManifestLoader $loader,
-        private Applier $applier,
+        private FileApplier $applier,
         private LockFile $lockFile,
-        private IOInterface $io,
-    ) {
-        $this->modes = [
-            FileMode::Replace->value => new ReplaceMode(),
-            FileMode::Preserve->value => new PreserveMode(),
-            FileMode::Append->value => new AppendMode(),
-            FileMode::Prepend->value => new PrependMode(),
-        ];
-    }
+        private OutputWriter $out,
+        private ScaffoldSummary $summary,
+    ) {}
 
     /**
-     * Runs the scaffold process for all authorized providers.
+     * Applies the files of every installed provider listed in `allowed-packages` and records them in
+     * `scaffold-lock.json`; a later provider overrides an earlier one per destination, and ejected files stay
+     * untouched.
      *
-     * @param PackageInterface $rootPackage Root Composer package providing the configuration.
-     * @param PackageInterface[] $installedPackages All packages currently installed in the project.
+     * @param ProjectConfig $config Consumer settings of the root package.
+     * @param PackageInterface[] $installedPackages Packages installed in the project.
      * @param string $projectRoot Absolute path to the project root.
-     * @param string $vendorDir Absolute path to the Composer vendor directory (used as fallback for install paths).
-     * @param bool $fullScaffold When `true`, applies all modes including `append` and `prepend`. When `false`, skips
-     * `append`/`prepend` for files already recorded in the lock file.
-     * @param array<string, string> $installPaths Map of package name to absolute install path resolved by Composer's
-     * `InstallationManager`. When provided, these paths take precedence over the default vendor-dir concatenation,
-     * enabling correct path resolution for packages with custom installer strategies.
+     * @param string $vendorDir Absolute path to the vendor directory, used for providers missing from `$installPaths`.
+     * @param array<string, string> $installPaths Absolute install paths keyed by package name, as resolved by
+     * Composer's `InstallationManager`.
+     *
+     * @throws \PHPForge\Scaffold\Exception\ScaffoldException when the manifest of an allowed provider cannot be loaded.
+     * @throws \RuntimeException when the lock file cannot be read or written.
      */
     public function scaffold(
-        PackageInterface $rootPackage,
+        ProjectConfig $config,
         array $installedPackages,
         string $projectRoot,
         string $vendorDir,
-        bool $fullScaffold,
         array $installPaths = [],
     ): void {
-        $extra = $rootPackage->getExtra();
-
-        $scaffoldConfig = $extra['scaffold'] ?? null;
-
-        if (!is_array($scaffoldConfig)) {
-            $this->io->write('[scaffold] No extra.scaffold configuration found. Skipping scaffold.');
+        if (!$config->declared) {
+            $this->out->writeStdout(
+                Message::SCAFFOLD_CONFIG_MISSING->getMessage(),
+            );
 
             return;
         }
 
-        $rawAllowed = $scaffoldConfig['allowed-packages'] ?? null;
-
-        if (!is_array($rawAllowed) || $rawAllowed === []) {
-            $this->io->write('[scaffold] No allowed-packages configured. Skipping scaffold.');
+        if ($config->allowedPackages === [] && $config->ignoredEntries === 0) {
+            $this->out->writeStdout(
+                Message::SCAFFOLD_NO_ALLOWED_PACKAGES->getMessage(),
+            );
 
             return;
         }
 
-        // Index installed packages by name for O(1) lookup.
-        $byName = [];
+        $providers = [];
 
         foreach ($installedPackages as $package) {
-            $byName[$package->getName()] = $package;
+            $name = $package->getName();
+
+            $providers[$name] = new ProviderPackage(
+                $name,
+                $package->getPrettyVersion(),
+                $package->getType() === 'metapackage' ? null : $installPaths[$name] ?? "{$vendorDir}/{$name}",
+                $package->getExtra(),
+            );
         }
 
-        // Merge file mappings in allowed-packages order; last provider wins for duplicate destinations.
-        $merged = [];
-        $providerEntries = [];
-
-        foreach ($rawAllowed as $allowedName) {
-            if (!is_string($allowedName)) {
-                continue;
-            }
-
-            $package = $byName[$allowedName] ?? null;
-
-            if ($package === null) {
-                $this->io->write(sprintf('[scaffold] Provider "%s" is not installed. Skipping.', $allowedName));
-
-                continue;
-            }
-
-            $packagePath = $installPaths[$allowedName] ?? "{$vendorDir}/{$allowedName}";
-            $providerEntries[$allowedName] = [
-                'version' => $package->getPrettyVersion(),
-                'path' => self::toProjectRelative($packagePath, $projectRoot),
-            ];
-
-            try {
-                $mappings = $this->loader->load($package, $packagePath);
-            } catch (Throwable $e) {
-                $this->io->writeError(
-                    sprintf('[scaffold] Failed to load manifest for "%s": %s', $allowedName, $e->getMessage()),
-                );
-
-                continue;
-            }
-
-            foreach ($mappings as $mapping) {
-                $merged[$mapping->destination] = $mapping;
-            }
-        }
-
-        if ($merged === []) {
-            return;
-        }
-
-        $lockData = $this->lockFile->read();
-        $dirty = false;
-
-        foreach ($providerEntries as $providerName => $entry) {
-            $existing = $lockData['providers'][$providerName] ?? null;
-
-            if (!is_array($existing) || $existing !== $entry) {
-                $lockData['providers'][$providerName] = $entry;
-                $dirty = true;
-            }
-        }
-
-        foreach ($merged as $destination => $mapping) {
-            if (
-                !$fullScaffold
-                && ($mapping->mode === FileMode::Append || $mapping->mode === FileMode::Prepend)
-                && isset($lockData['files'][$destination])
-            ) {
-                continue;
-            }
-
-            try {
-                $mode = $this->resolveMode($mapping->mode);
-                $hashAtScaffold = $this->extractHash($lockData, $destination);
-
-                $result = $this->applier->apply($mapping, $projectRoot, $mode, $hashAtScaffold);
-
-                if ($result->outcome === ApplyOutcome::Written) {
-                    $lockData['files'][$destination] = [
-                        'hash' => $result->newHash,
-                        'provider' => $mapping->providerName,
-                        'source' => $mapping->source,
-                        'mode' => $mapping->mode->value,
-                    ];
-                    $dirty = true;
-                } elseif ($result->newHash !== '') {
-                    // Refresh ownership metadata when a different provider claims the file but the on-disk content
-                    // is already in sync; the hash is left intact so replace-mode user-modification detection keeps
-                    // its original baseline.
-                    $expected = [
-                        'hash' => $lockData['files'][$destination]['hash'] ?? $result->newHash,
-                        'provider' => $mapping->providerName,
-                        'source' => $mapping->source,
-                        'mode' => $mapping->mode->value,
-                    ];
-
-                    if (($lockData['files'][$destination] ?? null) !== $expected) {
-                        $lockData['files'][$destination] = $expected;
-                        $dirty = true;
-                    }
-                }
-            } catch (Throwable $e) {
-                $this->io->writeError(
-                    sprintf('[scaffold] Error applying "%s": %s', $destination, $e->getMessage()),
-                );
-            }
-        }
-
-        if ($dirty) {
-            $this->lockFile->write($lockData);
-        }
-    }
-
-    /**
-     * Extracts the hash for a given destination from the lock data, if it exists.
-     *
-     * @param array{
-     *   providers: array<string, mixed>,
-     *   files: array<string, array{hash: string, provider: string, source: string, mode: string}>,
-     * } $lockData Decoded lock file data.
-     * @param string $destination Destination path to look up.
-     *
-     * @return string|null Hash if found, or `null` if the destination is not in the lock data.
-     */
-    private function extractHash(array $lockData, string $destination): string|null
-    {
-        $entry = $lockData['files'][$destination] ?? null;
-        $hash = $entry['hash'] ?? null;
-
-        return is_string($hash) ? $hash : null;
-    }
-
-    /**
-     * Byte-exact or case-insensitive prefix match, depending on `$caseInsensitive`.
-     *
-     * Extracted from {@see self::toProjectRelative()} so both branches remain reachable under tests regardless of the
-     * host platform's `DIRECTORY_SEPARATOR`.
-     *
-     * @param string $haystack String to inspect.
-     * @param string $needle Prefix to look for.
-     * @param bool $caseInsensitive `true` to match case-insensitively (Windows/NTFS semantics), `false` for byte-exact.
-     *
-     * @return bool `true` when `$haystack` starts with `$needle` under the requested comparison.
-     */
-    private static function prefixMatches(string $haystack, string $needle, bool $caseInsensitive): bool
-    {
-        return $caseInsensitive
-            ? stripos($haystack, $needle) === 0
-            : str_starts_with($haystack, $needle);
-    }
-
-    /**
-     * Resolves a {@see FileMode} to its corresponding {@see ModeInterface} implementation.
-     *
-     * @param FileMode $mode Mode case to resolve.
-     *
-     * @return ModeInterface Corresponding mode implementation.
-     */
-    private function resolveMode(FileMode $mode): ModeInterface
-    {
-        return $this->modes[$mode->value];
-    }
-
-    /**
-     * Converts an absolute path to one relative to the project root, using forward slashes.
-     *
-     * Returns the input unchanged (with forward slashes) when it lies outside the project root; storing an absolute
-     * path is a safe fallback for unusual deployments where the provider lives outside the root.
-     *
-     * The prefix check is case-insensitive on Windows because NTFS is case-insensitive and Composer may hand back paths
-     * whose casing differs between `projectRoot` and `packagePath` (for example, `C:\Users\foo` vs. `c:\users\FOO`).
-     *
-     * @param string $absolutePath Absolute path to convert.
-     * @param string $projectRoot Absolute path to the project root.
-     *
-     * @return string Relative path using forward slashes, or the normalized absolute path when outside the root.
-     */
-    private static function toProjectRelative(string $absolutePath, string $projectRoot): string
-    {
-        $normalizedRoot = rtrim(str_replace('\\', '/', $projectRoot), '/') . '/';
-        $normalizedPath = str_replace('\\', '/', $absolutePath);
-
-        if (self::prefixMatches($normalizedPath . '/', $normalizedRoot, DIRECTORY_SEPARATOR === '\\')) {
-            return rtrim(substr($normalizedPath, strlen($normalizedRoot)), '/');
-        }
-
-        return rtrim($normalizedPath, '/');
+        (new ScaffoldRunner($this->loader, $this->applier, $this->lockFile, $this->out, $this->summary))
+            ->run($config, $providers, $projectRoot);
     }
 }

@@ -4,157 +4,81 @@ declare(strict_types=1);
 
 namespace PHPForge\Scaffold\Tests\Console\Command;
 
-use PHPForge\Scaffold\Console\Command\StatusCommand;
-use PHPForge\Scaffold\Scaffold\Lock\{Hasher, LockFile};
+use PHPForge\Scaffold\Console\Command\{AbstractScaffoldCommand, StatusCommand};
+use PHPForge\Scaffold\Console\Message;
 use PHPForge\Scaffold\Tests\Support\TempDirectoryTrait;
-use PHPUnit\Framework\Attributes\Group;
-use PHPUnit\Framework\TestCase;
-use Symfony\Component\Console\Command\Command;
 use Symfony\Component\Console\Tester\CommandTester;
-use Xepozz\InternalMocker\MockerState;
+use Testo\Assert;
+use Testo\Core\Exception\SkipTest;
+use Testo\Lifecycle\{AfterTest, BeforeTest};
+use Testo\Test;
 
 use function chdir;
 use function getcwd;
 use function is_dir;
+use function mkdir;
+use function rmdir;
 
 /**
- * Unit tests for the Symfony Console {@see StatusCommand} verifying the status listing against a real
- * `scaffold-lock.json` written to a temporary project root.
+ * Functional tests for the Symfony Console {@see StatusCommand} covering the project root resolution of
+ * {@see AbstractScaffoldCommand} when the current working directory is gone.
  */
-#[Group('scaffold')]
-#[Group('console-command')]
-final class StatusCommandTest extends TestCase
+#[Test]
+final class StatusCommandTest
 {
     use TempDirectoryTrait;
 
+    /**
+     * Working directory before the test, restored after it.
+     */
     private string $originalCwd = '';
 
-    public function testExecutePrintsEmptyMessageWhenNoFilesTracked(): void
-    {
-        (new LockFile($this->tempDir))->write(['providers' => [], 'files' => []]);
-
-        $tester = new CommandTester(new StatusCommand());
-
-        $exitCode = $tester->execute([]);
-
-        self::assertSame(
-            0,
-            $exitCode,
-            'Empty-lock status must still return a success exit code.',
-        );
-        self::assertStringContainsString(
-            'No files tracked in scaffold-lock.json',
-            $tester->getDisplay(),
-            'Empty-lock case must emit the user-facing no-files message instead of a blank table.',
-        );
-    }
-
-    public function testExecutePrintsHeaderAndRowsForTrackedFiles(): void
-    {
-        $filePath = "{$this->tempDir}/output.txt";
-
-        file_put_contents($filePath, 'stub content');
-
-        $hash = (new Hasher())->hash($filePath);
-
-        (new LockFile($this->tempDir))->write(
-            [
-                'providers' => [],
-                'files' => [
-                    'output.txt' => [
-                        'hash' => $hash,
-                        'provider' => 'pkg/name',
-                        'source' => 'stubs/output.txt',
-                        'mode' => 'replace',
-                    ],
-                ],
-            ],
-        );
-
-        $tester = new CommandTester(new StatusCommand());
-
-        $exitCode = $tester->execute([]);
-
-        $display = $tester->getDisplay();
-
-        self::assertSame(
-            0,
-            $exitCode,
-            'Status command must return success exit code when files are tracked.',
-        );
-        self::assertStringContainsString(
-            'File',
-            $display,
-            'Status output must include a header with a "File" column.',
-        );
-        self::assertStringContainsString(
-            'Provider',
-            $display,
-            'Status output must include a header with a "Provider" column.',
-        );
-        self::assertStringContainsString(
-            'Mode',
-            $display,
-            'Status output must include a header with a "Mode" column.',
-        );
-        self::assertStringContainsString(
-            'Status',
-            $display,
-            'Status output must include a header with a "Status" column.',
-        );
-        self::assertStringContainsString(
-            'output.txt',
-            $display,
-            'Status output must include the tracked file name.',
-        );
-        self::assertStringContainsString(
-            'synced',
-            $display,
-            'Status output must indicate the file is synced.',
-        );
-    }
-
-    public function testExecuteReturnsFailureWhenGetcwdFails(): void
-    {
-        MockerState::addCondition(
-            'PHPForge\\Scaffold\\Console\\Command',
-            'getcwd',
-            [],
-            false,
-            default: true,
-        );
-
-        $tester = new CommandTester(new StatusCommand());
-
-        $exitCode = $tester->execute([]);
-
-        self::assertSame(
-            Command::FAILURE,
-            $exitCode,
-            "When 'getcwd()' returns 'false', the command must fail fast instead of propagating an empty project root.",
-        );
-        self::assertStringContainsString(
-            'Unable to determine current working directory',
-            $tester->getDisplay(),
-            'A clear diagnostic must be written to output when the CWD cannot be determined.',
-        );
-    }
-
-    protected function setUp(): void
-    {
-        $this->originalCwd = (string) getcwd();
-
-        $this->setUpTempDirectory();
-
-        chdir($this->tempDir);
-    }
-
-    protected function tearDown(): void
+    /**
+     * Restores the working directory of the runner.
+     */
+    #[AfterTest]
+    public function restoreWorkingDirectory(): void
     {
         if ($this->originalCwd !== '' && is_dir($this->originalCwd)) {
             chdir($this->originalCwd);
         }
+    }
 
-        $this->tearDownTempDirectory();
+    /**
+     * Ensures a removed current working directory fails with the unresolvable working directory error.
+     */
+    public function returnsFailureWhenTheWorkingDirectoryIsGone(): void
+    {
+        if (DIRECTORY_SEPARATOR === '\\') {
+            throw new SkipTest('Windows does not remove the current working directory.');
+        }
+
+        $removed = "{$this->tempDir}/removed";
+
+        mkdir($removed);
+        chdir($removed);
+        rmdir($removed);
+
+        $tester = new CommandTester(new StatusCommand());
+
+        Assert::same(
+            $tester->execute([]),
+            1,
+            "Exit code must be '1'.",
+        );
+        Assert::same(
+            $tester->getDisplay(),
+            Message::COMMAND_CWD_UNRESOLVABLE->getMessage() . PHP_EOL,
+            'Output must hold only the unresolvable working directory error.',
+        );
+    }
+
+    /**
+     * Saves the working directory of the runner.
+     */
+    #[BeforeTest]
+    public function saveWorkingDirectory(): void
+    {
+        $this->originalCwd = (string) getcwd();
     }
 }

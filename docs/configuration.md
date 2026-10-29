@@ -1,68 +1,70 @@
 # Configuration reference
 
-All scaffold configuration lives under the `extra.scaffold` key in the root project's `composer.json`. Provider packages
-are never trusted unless they appear in `allowed-packages`.
+The consumer configuration lives under `extra.scaffold` in the root `composer.json` of the project. Only the root
+package is read: the `extra.scaffold` block of a provider describes what it ships (see
+[Creating Providers](providers.md)), and its own `allowed-packages` has no effect on the projects that install it.
 
 ## allowed-packages
 
-**Required.** An ordered list of Composer package names that are permitted to contribute scaffold files.
+An ordered list of the Composer packages allowed to write files into the project. Packages that are not listed are never
+read, even when they ship a manifest.
 
 ```json
 {
     "extra": {
         "scaffold": {
-            "allowed-packages": [
-                "php-forge/baseline",
-                "php-forge/coding-standard"
-            ]
+            "allowed-packages": ["php-forge/baseline", "php-forge/coding-standard"]
         }
     }
 }
 ```
 
-**Ordering matters.** When two providers declare the same destination file, the provider listed **later** wins. This
-allows specialised layers to override base-layer defaults without forking them.
-
-If the list is empty or absent the plugin writes a notice and exits without modifying any files.
+- **Order matters.** When two providers ship the same destination, the provider listed later wins, and the run prints
+  `[scaffold] "<file>" from "<later>" overrides "<earlier>" (last provider in allowed-packages wins).`
+- A listed package that is not installed produces a warning that names the fix:
+  `[scaffold] Provider "<name>" is allowed but not installed; check extra.scaffold.allowed-packages or require it.`
+- Entries that are not strings are ignored with `[scaffold] Non-string entry in allowed-packages ignored.`
+- Without `extra.scaffold`, or with an empty or missing list, Composer runs print
+  `[scaffold] No extra.scaffold configuration found. Skipping scaffold.` or
+  `[scaffold] No allowed-packages configured. Skipping scaffold.` and write nothing.
 
 ## auto
 
-**Optional, defaults to `true`.** Controls whether the plugin auto-triggers on Composer script events
-(`post-install-cmd`, `post-update-cmd`, `post-create-project-cmd`).
+Optional, defaults to `true`. Controls whether the plugin scaffolds on Composer events.
 
 ```json
 {
     "extra": {
         "scaffold": {
             "auto": false,
-            "allowed-packages": ["php-forge/baseline"]
+            "allowed-packages": ["php-forge/baseline", "php-forge/coding-standard"]
         }
     }
 }
 ```
 
-When `auto: false`, the plugin remains installed and authorised but does not hook into Composer events. The CLI commands
-at `vendor/bin/scaffold` continue to work, so the consumer can sync provider templates on demand:
+With `auto: false`, Composer runs print
+`[scaffold] Auto-scaffold disabled via "extra.scaffold.auto"; run "vendor/bin/scaffold" manually.` and write nothing.
+The console commands keep working, and `sync` applies the providers on demand, creating `scaffold-lock.json` when it
+does not exist yet:
 
 ```bash
-vendor/bin/scaffold reapply --provider=php-forge/baseline
-vendor/bin/scaffold diff <file>
-vendor/bin/scaffold status
+vendor/bin/scaffold status                      # every provider file is listed as pending
+vendor/bin/scaffold sync --dry-run --exit-code  # review what applying the providers would change
+vendor/bin/scaffold sync                        # apply them, as composer install would
 ```
 
-Use this when **explicit, opt-in updates** matter more than continuous synchronisation, for example on repositories
-where every change to project standards should be reviewed before being applied.
+Use it when every change to the shared files must be reviewed before it lands. Only an explicit `false` disables the
+Composer hooks; any other value, including a missing key or `null`, keeps them enabled, so a typo never disables
+scaffolding silently.
 
-Only an explicit `false` disables the auto-trigger; missing, `null`, non-boolean, or any other value defaults to enabled
-to avoid silent disable on typo.
-
-## Full annotated example
-
-Scaffold configuration for a project with `php-forge/baseline` and `php-forge/coding-standard` already installed:
+## Full example
 
 ```json
 {
-    "require": {
+    "require-dev": {
+        "php-forge/baseline": "^0.2",
+        "php-forge/coding-standard": "^0.3",
         "php-forge/scaffold": "^0.3"
     },
     "config": {
@@ -80,43 +82,117 @@ Scaffold configuration for a project with `php-forge/baseline` and `php-forge/co
 
 ## scaffold-lock.json
 
-The plugin writes `scaffold-lock.json` at the project root after every successful run. It records the SHA-256 hash,
-provider name, source path, and mode for every file it has written.
+Every run that applies files writes `scaffold-lock.json` at the project root. It records which provider owns each file,
+how it was written, and the hashes that scaffold compares against on the next run. Commit it: `status`, `diff`, `prune`
+and the user-modified detection of every clone and CI job read it.
 
-**Commit this file.** It serves the same role as `composer.lock`: it lets collaborators and CI reproduce the exact
-scaffold state and detect files that have been modified after scaffolding.
-
-Example lock entry:
+Excerpt from a project that installed `php-forge/baseline` and `php-forge/coding-standard` with an existing `ecs.php`:
 
 ```json
 {
     "providers": {
         "php-forge/baseline": {
-            "version": "0.1.0",
+            "version": "0.2.0",
             "path": "vendor/php-forge/baseline"
+        },
+        "php-forge/coding-standard": {
+            "version": "0.3.4",
+            "path": "vendor/php-forge/coding-standard"
         }
     },
     "files": {
-        "config/params.php": {
-            "hash": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        ".gitignore": {
+            "hash": "sha256:4d07dd19f50ed675620f5a2f2d3abc9d2d3df9fe4ffbf70efc7a7efabfdbdc7c",
             "provider": "php-forge/baseline",
-            "source": "stubs/config/params.php",
-            "mode": "replace"
+            "source": "metadata/.gitignore",
+            "mode": "append",
+            "stub-hash": "sha256:7d7753b2cc6184d74fb22f78c6b351b6c9c9dc04bcabe5481a0ed64b06858597"
+        },
+        ".styleci.yml": {
+            "hash": "sha256:825f8c744ffbd2bc2369712e7192b8694129a8ecbc3fd91dc9300fccecf827bd",
+            "provider": "php-forge/baseline",
+            "source": "metadata/.styleci.yml",
+            "mode": "replace",
+            "stub-hash": "sha256:825f8c744ffbd2bc2369712e7192b8694129a8ecbc3fd91dc9300fccecf827bd"
+        },
+        "ecs.php": {
+            "hash": "sha256:50b842500050094116202088109abfac734d2fd9341eb14b25dd870fc63936f3",
+            "provider": "php-forge/coding-standard",
+            "source": "src/config/ecs.php",
+            "mode": "preserve",
+            "stub-hash": "sha256:7c054b397506c1a4d4ab2d1197e9536b44f114e2721a0e9f8c46f362efcc7bae",
+            "adopted": true
         }
     }
 }
 ```
 
-Provider paths are recorded **relative to the project root** so the lockfile stays stable across developer machines.
-Versions come from Composer's `getPrettyVersion()`.
+`providers.<name>`:
 
-## Event differentiation
+| Key       | Meaning                                                                                                   |
+| --------- | --------------------------------------------------------------------------------------------------------- |
+| `version` | Pretty version of the provider at the last run, as Composer reports it.                                   |
+| `path`    | Install path of the provider, relative to the project root, or absolute when it lies outside the project. |
 
-| Composer event            | Behaviour                                                                                                                          |
-| ------------------------- | ---------------------------------------------------------------------------------------------------------------------------------- |
-| `post-create-project-cmd` | Full scaffold: all modes applied, all files written, lock created.                                                                 |
-| `post-install-cmd`        | Partial scaffold: `append` and `prepend` files already in the lock are skipped. `replace` files whose hashes match are re-applied. |
-| `post-update-cmd`         | Same as `post-install-cmd`.                                                                                                        |
+`files.<destination>`:
+
+| Key         | Meaning                                                                                                          |
+| ----------- | ---------------------------------------------------------------------------------------------------------------- |
+| `hash`      | `sha256:<hex>` of the destination as scaffold last left it (see [Hash tracking](modes.md#hash-tracking)).        |
+| `provider`  | Package that owns the destination.                                                                               |
+| `source`    | Path of the stub inside the provider.                                                                            |
+| `mode`      | `replace`, `preserve`, `append` or `prepend`.                                                                    |
+| `stub-hash` | `sha256:<hex>` of the stub at the last apply. Entries written by `0.2.x` lack it until a run applies them again. |
+| `merge`     | Merge strategy (`ini`, `list` or `text`) selected by the manifest `merge` map; absent when the name decides it.  |
+| `ejected`   | `true` after `vendor/bin/scaffold eject <file> --yes`: no run writes the file until `reapply <file> --force`.    |
+| `adopted`   | `true` for a `preserve` file that existed before scaffold tracked it.                                            |
+
+The file is written atomically with `providers` and `files` sorted by key and a trailing newline, so diffs stay small.
+Keys that scaffold does not know are kept. A lock with Git conflict markers is rejected with a message that names them;
+resolve the conflict and run Composer again.
+
+## Composer events
+
+| Composer event            | Behavior                                                                                                                      |
+| ------------------------- | ----------------------------------------------------------------------------------------------------------------------------- |
+| `post-install-cmd`        | Applies every allowed and installed provider: every mode on every destination, ejected files skipped.                         |
+| `post-update-cmd`         | Same as `post-install-cmd`.                                                                                                   |
+| `post-create-project-cmd` | Same, unless `post-install-cmd` or `post-update-cmd` already ran in the same Composer process, so a template is applied once. |
+
+There is no partial run: `append` and `prepend` files are re-evaluated on every event, so new provider entries reach
+existing projects on the next `composer install` or `composer update`.
+
+The plugin subscribes to these events as a Composer plugin, not as a script:
+
+- `composer install --no-scripts` still scaffolds.
+- `composer install --no-plugins` does not load the plugin
+  (`The "php-forge/scaffold" plugin was not loaded as plugins are disabled.`); run `vendor/bin/scaffold sync`
+  afterwards, or a later plain `composer install` catches up.
+- With the plugin in `require-dev`, a fresh `composer install --no-dev`, such as a production build, does not install it
+  and writes no scaffold file.
+
+## Output and failure policy
+
+A Composer run that writes a file or needs attention ends with one summary line on stdout, such as
+`[scaffold] 2 files written, 7 unchanged, 1 conflict, 1 orphan, 1 warning.`; a run that changes nothing prints nothing.
+Warnings and errors go to stderr, prefixed with `[scaffold]`.
+
+The run fails (Composer exits with `1`) when:
+
+- `scaffold-lock.json` cannot be read: invalid JSON or Git conflict markers. Nothing is applied.
+- The manifest of an allowed and installed provider is invalid: unknown key, invalid mode or merge strategy, unsafe
+  path, missing `copy` path. The message names the provider; nothing is applied.
+- A file cannot be applied (unsafe path, unreadable stub, write failure). The other files are applied and recorded
+  first, then the run fails with `[scaffold] 1 file failed while scaffolding; see the messages above.`
+
+Warnings keep the run successful:
+
+- An allowed provider that is not installed, or that produced no file mapping.
+- A `replace` file that overwrote an untracked file with different content.
+- A user-modified `replace` file that was skipped, with the `conflict` line when its stub changed (see
+  [File Modes](modes.md#provider-updates-after-a-version-bump)).
+- Orphaned files that no allowed provider ships anymore, listed with the `vendor/bin/scaffold prune` hint. Composer runs
+  never delete them.
 
 ## Next steps
 

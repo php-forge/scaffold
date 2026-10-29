@@ -4,27 +4,24 @@ declare(strict_types=1);
 
 namespace PHPForge\Scaffold\Scaffold;
 
+use PHPForge\Scaffold\Console\Message as ConsoleMessage;
+use PHPForge\Scaffold\Exception\Message;
+use PHPForge\Scaffold\Filesystem;
+use PHPForge\Scaffold\Security\PathValidator;
 use RuntimeException;
 
-use function chmod;
 use function dirname;
-use function fileperms;
 use function is_array;
+use function is_dir;
 use function is_string;
 use function ltrim;
-use function preg_match;
 use function realpath;
 use function rtrim;
-use function sprintf;
-use function str_replace;
 use function str_starts_with;
-use function umask;
 
 /**
- * Resolves absolute scaffold paths from base roots and relative segments.
- *
- * Centralizes path joining, directory creation, and provider-root resolution used by mode strategies and console
- * controllers. Callers remain responsible for validating the relative segments with {@see PathValidator} beforehand.
+ * Resolves absolute scaffold paths from roots and relative segments that callers have already validated with
+ * {@see \PHPForge\Scaffold\Security\PathValidator}.
  */
 final class PathResolver
 {
@@ -45,14 +42,16 @@ final class PathResolver
     /**
      * Creates the parent directory for the given absolute file path when it does not exist.
      *
+     * @param string $absoluteFilePath Absolute path to the file whose parent directory is created.
+     *
      * @throws RuntimeException when the directory cannot be created.
      */
     public static function ensureDirectory(string $absoluteFilePath): void
     {
         $dir = dirname($absoluteFilePath);
 
-        if (!is_dir($dir) && mkdir($dir, 0o777, recursive: true) === false && !is_dir($dir)) {
-            throw new RuntimeException(sprintf('Could not create directory "%s".', $dir));
+        if (!is_dir($dir)) {
+            Filesystem::mkdir($dir, Message::PATH_DIRECTORY_CREATE_FAILED->getMessage($dir));
         }
     }
 
@@ -71,20 +70,17 @@ final class PathResolver
     }
 
     /**
-     * Resolves the absolute root of a provider package, honoring the lock-recorded path when it stays inside the vendor
-     * directory.
-     *
-     * Accepts both relative paths (resolved against `$projectRoot`) and legacy absolute paths written by earlier plugin
-     * versions.
+     * Resolves the absolute root of a provider from its lock-recorded path when that path, relative or absolute, stays
+     * inside the vendor directory, falling back to `<vendorDir>/<providerName>`.
      *
      * @param string $vendorDir Absolute path to the Composer vendor directory.
-     * @param string $providerName Provider package name (for example, `php-forge/baseline`).
-     * @param mixed $providerLock Decoded `providers.<name>` entry from `scaffold-lock.json`, when present.
-     * @param string $projectRoot Absolute path to the project root; required to expand relative lock paths. Pass an
-     * empty string only when the caller knows that lock-recorded paths are absolute (legacy).
+     * @param string $providerName Composer package name of the provider, used for the fallback root.
+     * @param mixed $providerLock Decoded `providers.<name>` entry of `scaffold-lock.json`, or `null` when absent.
+     * @param string $projectRoot Absolute path to the project root that relative recorded paths are joined to; an empty
+     * string leaves them unexpanded.
      *
-     * @return array{root: string, warning: string|null} An array containing the resolved provider root and an optional
-     * warning message when the lock-recorded path is invalid.
+     * @return array{root: string, warning: string|null} Provider root, and a warning when the recorded path resolves
+     * outside the vendor directory.
      */
     public static function resolveProviderRoot(
         string $vendorDir,
@@ -97,79 +93,69 @@ final class PathResolver
         $defaultRoot = $safeVendorDir . DIRECTORY_SEPARATOR . $providerName;
 
         if (!is_array($providerLock) || !is_string($providerLock['path'] ?? null)) {
-            return ['root' => $defaultRoot, 'warning' => null];
+            return [
+                'root' => $defaultRoot,
+                'warning' => null,
+            ];
         }
 
         $recordedPath = $providerLock['path'];
 
-        $isAbsolute = str_starts_with($recordedPath, '/')
-            || str_starts_with($recordedPath, '\\')
-            || preg_match('/^[A-Za-z]:/', $recordedPath) === 1;
-        $expanded = $isAbsolute || $projectRoot === ''
+        $expanded = PathValidator::isAbsolute($recordedPath) || $projectRoot === ''
             ? $recordedPath
             : rtrim($projectRoot, '/\\') . DIRECTORY_SEPARATOR . $recordedPath;
 
         $candidate = self::realpathOrFallback($expanded);
 
         if (str_starts_with($candidate . DIRECTORY_SEPARATOR, $safeVendorDir . DIRECTORY_SEPARATOR)) {
-            return ['root' => $candidate, 'warning' => null];
+            return [
+                'root' => $candidate,
+                'warning' => null,
+            ];
         }
 
         return [
             'root' => $defaultRoot,
-            'warning' => sprintf(
-                '[scaffold] Provider root for "%s" resolves outside vendor dir; using default path.',
-                $providerName,
-            ),
+            'warning' => ConsoleMessage::SCAFFOLD_PROVIDER_ROOT_OUTSIDE_VENDOR->getMessage($providerName),
         ];
     }
 
     /**
-     * Joins a provider root with a relative source path using the platform separator.
-     *
-     * Forward slashes inside `$source` are normalized to the platform separator.
+     * Joins a provider root with a relative source path.
      *
      * @param string $providerPath Absolute path to the provider root directory.
      * @param string $source Relative path to a source file or directory inside the provider, using forward slashes as
      * separators.
      *
-     * @return string Absolute path to the source file or directory inside the provider, with platform separators.
+     * @return string Absolute path to the source file or directory inside the provider.
      */
     public static function source(string $providerPath, string $source): string
     {
-        $relative = ltrim($source, '/\\');
-
-        // Windows-only normalisation: str_replace is a no-op on POSIX (separator is '/').
-        // @codeCoverageIgnoreStart
-        $relative = str_replace('/', DIRECTORY_SEPARATOR, $relative);
-        // @codeCoverageIgnoreEnd
-
-        return rtrim($providerPath, '/\\') . DIRECTORY_SEPARATOR . $relative;
+        return rtrim($providerPath, '/\\') . DIRECTORY_SEPARATOR . ltrim($source, '/\\');
     }
 
     /**
-     * Copies the source file's permission bits onto the destination, preserving the executable bit for CLI stubs
-     * such as `yii` or shell scripts, while honoring the caller's `umask` so restrictive setups (for example, `0077`
-     * on shared hosts or CI) are not silently widened.
-     *
-     * On POSIX systems, PHP's `copy()` and `file_put_contents()` honor the current umask rather than the source's
-     * permissions, which silently drops the executable bit. This helper brings the destination back in line with the
-     * source, masked by the current umask. Failures are swallowed because permission changes are best-effort on
-     * Windows and restricted mounts.
+     * Copies the source permission bits, masked by the current `umask`, onto the destination so executable stubs stay
+     * executable, and reports a failure instead of raising a PHP warning.
      *
      * @param string $source Absolute path to the source file.
      * @param string $destination Absolute path to the destination file.
+     *
+     * @return string|null Warning without the `[scaffold]` prefix when the permissions could not be read or set, or
+     * `null` on success.
      */
-    public static function syncPermissions(string $source, string $destination): void
+    public static function syncPermissions(string $source, string $destination): string|null
     {
-        $perms = @fileperms($source);
-
-        if ($perms === false) {
-            return;
+        try {
+            Filesystem::copyPermissions(
+                $source,
+                $destination,
+                ConsoleMessage::SCAFFOLD_PERMISSIONS_COPY_FAILED->getMessage($source, $destination),
+            );
+        } catch (RuntimeException $e) {
+            return $e->getMessage();
         }
 
-        $currentUmask = umask();
-
-        @chmod($destination, $perms & 0o777 & ~$currentUmask);
+        return null;
     }
 }

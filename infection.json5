@@ -1,15 +1,23 @@
 {
     $schema: "./vendor/infection/infection/resources/schema.json",
+    ignoreMsiWithNoMutations: true,
+    initialTestsPhpOptions: "-d memory_limit=-1",
     logs: {
         text: "php://stderr",
         stryker: {
             report: "main",
         },
     },
-    source: {
-        directories: ["src"],
-    },
+    minCoveredMsi: 100,
+    minMsi: 100,
     mutators: {
         "@default": true,
     },
+    source: {
+        directories: ["src"],
+    },
+    staticAnalysisToolOptions: "--memory-limit=-1",
+    testFramework: "testo",
+    testFrameworkExtraArgs: "--suite=Unit",
+    threads: "max",
 }

@@ -7,42 +7,52 @@ namespace PHPForge\Scaffold\Console;
 use Symfony\Component\Console\Output\{ConsoleOutputInterface, OutputInterface};
 
 /**
- * Adapter that bridges {@see OutputWriter} writes to a Symfony Console {@see OutputInterface}.
- *
- * Delegates to `writeln()` with {@see OutputInterface::OUTPUT_RAW} so the verbatim byte content stays exactly as the
- * service produced it and a single trailing newline is appended. The raw option is essential for the `diff` command,
- * whose output can legitimately contain angle-bracket tokens (for example, `<?php echo $user; ?>` in a stub) that the
- * default formatter would otherwise interpret as style tags and corrupt or crash on.
- *
- * When the underlying output is a {@see ConsoleOutputInterface}, stderr writes are routed through `getErrorOutput()`,
- * matching Symfony's "split stdout/stderr" convention.
+ * Writes service messages to a Symfony Console output in raw mode, so stub content such as `<?php ?>` is never parsed
+ * as style tags.
  */
 final readonly class SymfonyOutputWriter implements OutputWriter
 {
+    /**
+     * @param OutputInterface $output Console output that receives the messages and, through its error output when it
+     * is a {@see \Symfony\Component\Console\Output\ConsoleOutputInterface}, the standard error messages.
+     */
     public function __construct(private OutputInterface $output) {}
 
     /**
-     * Writes `$message` to stderr followed by a single trailing newline, bypassing Symfony's formatter.
+     * Returns whether the console output supports ANSI decoration.
      *
-     * If the underlying output supports separate error output (i.e., implements {@see ConsoleOutputInterface}), the
-     * message is sent to that stream; otherwise, it falls back to writing to the main output stream.
+     * @return bool `true` when the main output is decorated, `false` otherwise.
+     */
+    public function isDecorated(): bool
+    {
+        return $this->output->isDecorated();
+    }
+
+    /**
+     * Writes `$message` and a newline to the error output, or to the main output when no error output is available.
      *
-     * @param string $message Message to write.
+     * @param string $message Message without a trailing newline; the writer appends one.
      */
     public function writeStderr(string $message): void
     {
         $sink = $this->output instanceof ConsoleOutputInterface ? $this->output->getErrorOutput() : $this->output;
 
-        $sink->writeln($message, OutputInterface::OUTPUT_RAW);
+        $sink->writeln(
+            $message,
+            OutputInterface::OUTPUT_RAW,
+        );
     }
 
     /**
-     * Writes `$message` to stdout followed by a single trailing newline, bypassing Symfony's formatter.
+     * Writes `$message` and a newline to the main output.
      *
-     * @param string $message Message to write.
+     * @param string $message Message without a trailing newline; the writer appends one.
      */
     public function writeStdout(string $message): void
     {
-        $this->output->writeln($message, OutputInterface::OUTPUT_RAW);
+        $this->output->writeln(
+            $message,
+            OutputInterface::OUTPUT_RAW,
+        );
     }
 }

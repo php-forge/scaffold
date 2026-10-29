@@ -5,22 +5,18 @@ declare(strict_types=1);
 namespace PHPForge\Scaffold\Console;
 
 /**
- * Standardized exit codes returned by scaffold services.
- *
- * Backed by `int` so service entry points can return the code via `->value` when called from Console commands
- * controllers, both of which expect an integer exit status.
+ * Represents the exit codes that scaffold services return to the console commands.
  */
 enum ExitCode: int
 {
     /**
-     * Recoverable error for example, an untracked file passed to `diff` / `eject`, an unsafe lock entry, a missing
-     * stub, or an I/O failure mid-run.
+     * Reports a failure such as an untracked file, an unsafe lock entry, a missing stub, a read error, or a `reapply`
+     * filter that matches no tracked file.
      */
     case Error = 1;
 
     /**
-     * Success, including preview / no-op runs (for example, `reapply` with no changes to apply, or `eject` without
-     * `--yes`).
+     * Reports success, including previews and runs that change nothing.
      */
     case Ok = 0;
 }

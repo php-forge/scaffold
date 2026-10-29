@@ -6,136 +6,97 @@ namespace PHPForge\Scaffold\Tests\Support;
 
 use Composer\Composer;
 use Composer\Factory;
-use Composer\IO\{BufferIO, IOInterface};
-use Composer\Package\{CompletePackage, PackageInterface};
-use Composer\Script\Event as ScriptEvent;
-use Composer\Script\ScriptEvents;
+use Composer\IO\BufferIO;
+use Composer\Package\CompletePackage;
+use Composer\Script\{Event as ScriptEvent, ScriptEvents};
 use PHPForge\Scaffold\EventSubscriber;
-use ReflectionClass;
-use RuntimeException;
-
-use function sprintf;
+use ReflectionProperty;
+use Testo\Lifecycle\{AfterTest, BeforeTest};
 
 /**
- * Harness for functional tests that need a real {@see Composer} instance and programmatically dispatched script events.
+ * Dispatches Composer script events to {@see EventSubscriber} for a fake project built by {@see FakeProjectBuilder},
+ * with a real {@see Composer} instance whose local repository holds the provider `demo/scaffold`.
  *
- * Centralizes the boilerplate of (1) calling {@see Factory::create()} against a fake project, (2) seeding the local
- * repository with mock provider packages, and (3) building {@see ScriptEvent} instances for the three lifecycle events
- * the scaffold plugin subscribes to.
- *
- * Tests dispatch events directly against a {@see \PHPForge\Scaffold\EventSubscriber} instance, bypassing the full
- * Composer installation pipeline. This exercises the same code path the plugin runs in production without the cost
- * and brittleness of shelling out to `composer install`.
+ * This runs the code path of the plugin in production without shelling out to `composer install`. The class that uses
+ * this trait must also use {@see TempDirectoryTrait}, which holds the fake project.
  */
 trait ComposerEventHarness
 {
     /**
-     * Adds a mock provider package to the local repository with the given scaffold manifest.
-     *
-     * @param Composer $composer Live Composer instance whose local repository receives the package.
-     * @param string $name Composer package name (for example, `demo/scaffold`).
-     * @param array<string, mixed> $scaffoldManifest Raw `extra.scaffold` array, typically a `{copy: [...]}` inline
-     * manifest or an external `{manifest: "scaffold.json"}` pointer.
-     * @param string $version Pretty version string persisted into `scaffold-lock.json`.
-     *
-     * @return PackageInterface Package that was added to the local repository.
+     * Clears the process-wide run flag of {@see EventSubscriber} before and after each test, so
+     * `post-create-project-cmd` runs unless the test itself dispatched `post-install-cmd` or `post-update-cmd` first.
      */
-    protected function addMockProvider(
-        Composer $composer,
-        string $name,
-        array $scaffoldManifest,
-        string $version = '1.0.0',
-    ): PackageInterface {
-        $package = new CompletePackage($name, "{$version}.0", $version);
+    #[BeforeTest]
+    #[AfterTest]
+    public function resetScaffoldRanFlag(): void
+    {
+        (new ReflectionProperty(EventSubscriber::class, 'scaffoldRan'))->setValue(null, false);
+    }
 
-        $package->setType('library');
-        $package->setExtra(['scaffold' => $scaffoldManifest]);
+    /**
+     * Dispatches `$event` to a new {@see EventSubscriber} for a fresh Composer instance of the project of `$builder`
+     * that has `demo/scaffold` installed with `$manifest`, and returns the Composer output.
+     *
+     * @param FakeProjectBuilder $builder Fake project, with its `composer.json` written by {@see self::project()}.
+     * @param array<string, mixed> $manifest Raw `extra.scaffold` of `demo/scaffold`.
+     * @param string $event Script event name, such as {@see ScriptEvents::POST_INSTALL_CMD}.
+     * @param string $version Pretty version of `demo/scaffold`.
+     * @param BufferIO $io IO of the run, which keeps the output when the run throws.
+     *
+     * @return string Output written to `$io`.
+     */
+    protected function dispatch(
+        FakeProjectBuilder $builder,
+        array $manifest,
+        string $event = ScriptEvents::POST_INSTALL_CMD,
+        string $version = '1.0.0',
+        BufferIO $io = new BufferIO(),
+    ): string {
+        $composer = Factory::create(
+            $io,
+            "{$builder->getProjectRoot()}/composer.json",
+            disablePlugins: true,
+            disableScripts: true,
+        );
+
+        $package = new CompletePackage('demo/scaffold', "{$version}.0", $version);
+
+        $package->setExtra(['scaffold' => $manifest]);
         $composer->getRepositoryManager()->getLocalRepository()->addPackage($package);
 
-        return $package;
-    }
+        $subscriber = new EventSubscriber();
+        $scriptEvent = new ScriptEvent($event, $composer, $io, true);
 
-    /**
-     * Creates a {@see Composer} instance for a fake project using {@see Factory::create()}.
-     *
-     * Plugins are disabled because tests manually instantiate {@see \PHPForge\Scaffold\EventSubscriber} and dispatch
-     * events against it, so the plugin manager does not need to auto-load this package.
-     *
-     * @param string $projectRoot Absolute path to the fake project directory containing `composer.json`.
-     * @param IOInterface|null $io Optional IO; a {@see BufferIO} is created when omitted so callers can inspect output.
-     *
-     * @return Composer Composer instance bootstrapped for the fake project, with plugins disabled.
-     */
-    protected function buildComposerForProject(string $projectRoot, IOInterface|null $io = null): Composer
-    {
-        $io ??= new BufferIO();
-
-        $composerJson = $projectRoot . '/composer.json';
-
-        if (!is_file($composerJson)) {
-            throw new RuntimeException(
-                sprintf(
-                    'Fake project "%s" is missing composer.json; call FakeProjectBuilder::createComposerJson first.',
-                    $projectRoot,
-                ),
-            );
+        if ($event === ScriptEvents::POST_CREATE_PROJECT_CMD) {
+            $subscriber->onPostCreateProject($scriptEvent);
+        } elseif ($event === ScriptEvents::POST_UPDATE_CMD) {
+            $subscriber->onPostUpdate($scriptEvent);
+        } else {
+            $subscriber->onPostInstall($scriptEvent);
         }
 
-        return Factory::create($io, $composerJson, disablePlugins: true, disableScripts: true);
+        return $io->getOutput();
     }
 
     /**
-     * Builds a `post-create-project-cmd` script event bound to `$composer` and `$io`.
+     * Creates the fake project in the temporary directory, with a `composer.json` that pins the root version, points
+     * `vendor-dir` at the fake vendor directory and holds `$scaffold` as `extra.scaffold`.
      *
-     * @param Composer $composer Live Composer instance to bind to the event.
-     * @param IOInterface $io IO instance to bind to the event.
-     *
-     * @return ScriptEvent Script event instance with name `post-create-project-cmd` and the given composer and IO.
+     * @param array<array-key, mixed> $scaffold Root `extra.scaffold`.
      */
-    protected function makePostCreateProjectEvent(Composer $composer, IOInterface $io): ScriptEvent
+    protected function project(array $scaffold = ['allowed-packages' => ['demo/scaffold']]): FakeProjectBuilder
     {
-        return new ScriptEvent(ScriptEvents::POST_CREATE_PROJECT_CMD, $composer, $io, true);
-    }
+        $builder = new FakeProjectBuilder($this->tempDir);
 
-    /**
-     * Builds a `post-install-cmd` script event bound to `$composer` and `$io`.
-     *
-     * @param Composer $composer Live Composer instance to bind to the event.
-     * @param IOInterface $io IO instance to bind to the event.
-     *
-     * @return ScriptEvent Script event instance with name `post-install-cmd` and the given composer and IO.
-     */
-    protected function makePostInstallEvent(Composer $composer, IOInterface $io): ScriptEvent
-    {
-        return new ScriptEvent(ScriptEvents::POST_INSTALL_CMD, $composer, $io, true);
-    }
+        $builder->createComposerJson(
+            [
+                'name' => 'demo/project',
+                'version' => '1.0.0',
+                'config' => ['vendor-dir' => $builder->getVendorDir()],
+                'extra' => ['scaffold' => $scaffold],
+            ],
+        );
 
-    /**
-     * Builds a `post-update-cmd` script event bound to `$composer` and `$io`.
-     *
-     * @param Composer $composer Live Composer instance to bind to the event.
-     * @param IOInterface $io IO instance to bind to the event.
-     *
-     * @return ScriptEvent Script event instance with name `post-update-cmd` and the given composer and IO.
-     */
-    protected function makePostUpdateEvent(Composer $composer, IOInterface $io): ScriptEvent
-    {
-        return new ScriptEvent(ScriptEvents::POST_UPDATE_CMD, $composer, $io, true);
-    }
-
-    /**
-     * Resets the process-wide {@see EventSubscriber::$installScaffoldRan} flag via reflection.
-     *
-     * The flag persists across tests by design (it guards against duplicate scaffolding within a single Composer
-     * invocation). Tests that dispatch multiple events across different scenarios must reset it to get deterministic
-     * behavior.
-     */
-    protected function resetInstallScaffoldRanFlag(): void
-    {
-        $reflection = new ReflectionClass(EventSubscriber::class);
-
-        $property = $reflection->getProperty('installScaffoldRan');
-
-        $property->setValue(null, false);
+        return $builder;
     }
 }

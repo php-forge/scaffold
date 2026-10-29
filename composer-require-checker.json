@@ -1,5 +1,14 @@
 {
-    "symbol-whitelist": [],
+    "symbol-whitelist": [
+        "Composer\\Composer",
+        "Composer\\EventDispatcher\\EventSubscriberInterface",
+        "Composer\\InstalledVersions",
+        "Composer\\IO\\IOInterface",
+        "Composer\\Package\\PackageInterface",
+        "Composer\\Plugin\\PluginInterface",
+        "Composer\\Script\\Event",
+        "Composer\\Script\\ScriptEvents"
+    ],
     "php-core-extensions": [
         "Core",
         "date",

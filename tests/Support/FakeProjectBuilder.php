@@ -6,52 +6,50 @@ namespace PHPForge\Scaffold\Tests\Support;
 
 use RuntimeException;
 
+use function dirname;
+use function file_put_contents;
+use function is_dir;
+use function json_encode;
+use function mkdir;
+use function sprintf;
+
 /**
  * Builds a temporary fake project and vendor directory for functional scaffold tests.
  */
 final readonly class FakeProjectBuilder
 {
+    /**
+     * Absolute path of the fake project root.
+     */
     private string $projectRoot;
+    /**
+     * Absolute path of the fake vendor directory, a sibling of the project root.
+     */
     private string $vendorDir;
 
+    /**
+     * @param string $tempBase Absolute path of the temporary directory of the test.
+     */
     public function __construct(string $tempBase)
     {
-        $this->projectRoot = $tempBase . '/project';
-        $this->vendorDir = $tempBase . '/vendor';
+        $this->projectRoot = "{$tempBase}/project";
+        $this->vendorDir = "{$tempBase}/vendor";
 
-        if (!is_dir($this->projectRoot)
-            && mkdir($this->projectRoot, 0o777, recursive: true) === false
-            && !is_dir($this->projectRoot)
-        ) {
-            throw new RuntimeException(sprintf('Could not create project root "%s".', $this->projectRoot));
-        }
-
-        if (!is_dir($this->vendorDir)
-            && mkdir($this->vendorDir, 0o777, recursive: true) === false
-            && !is_dir($this->vendorDir)
-        ) {
-            throw new RuntimeException(sprintf('Could not create vendor dir "%s".', $this->vendorDir));
-        }
+        self::ensureDirectory($this->projectRoot);
+        self::ensureDirectory($this->vendorDir);
     }
 
     /**
      * Writes a `composer.json` at the project root from the given array.
      *
      * @param array<string, mixed> $config Root composer.json content to serialize.
-     *
-     * @return string Absolute path to the written `composer.json`.
      */
-    public function createComposerJson(array $config): string
+    public function createComposerJson(array $config): void
     {
-        $path = $this->projectRoot . '/composer.json';
-
-        $json = json_encode($config, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR);
-
-        if (file_put_contents($path, $json) === false) {
-            throw new RuntimeException(sprintf('Could not write composer.json at "%s".', $path));
-        }
-
-        return $path;
+        self::write(
+            "{$this->projectRoot}/composer.json",
+            json_encode($config, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR),
+        );
     }
 
     /**
@@ -62,16 +60,7 @@ final readonly class FakeProjectBuilder
      */
     public function createProjectFile(string $relPath, string $content): void
     {
-        $full = $this->projectRoot . '/' . $relPath;
-        $dir = dirname($full);
-
-        if (!is_dir($dir) && mkdir($dir, 0o777, recursive: true) === false && !is_dir($dir)) {
-            throw new RuntimeException(sprintf('Could not create directory "%s".', $dir));
-        }
-
-        if (file_put_contents($full, $content) === false) {
-            throw new RuntimeException(sprintf('Could not write file "%s".', $full));
-        }
+        self::write("{$this->projectRoot}/{$relPath}", $content);
     }
 
     /**
@@ -83,22 +72,11 @@ final readonly class FakeProjectBuilder
      */
     public function createStubFile(string $providerName, string $relPath, string $content): void
     {
-        $full = $this->vendorDir . '/' . $providerName . '/' . $relPath;
-        $dir = dirname($full);
-
-        if (!is_dir($dir) && mkdir($dir, 0o777, recursive: true) === false && !is_dir($dir)) {
-            throw new RuntimeException(sprintf('Could not create directory "%s".', $dir));
-        }
-
-        if (file_put_contents($full, $content) === false) {
-            throw new RuntimeException(sprintf('Could not write file "%s".', $full));
-        }
+        self::write("{$this->vendorDir}/{$providerName}/{$relPath}", $content);
     }
 
     /**
      * Returns the absolute path to the fake project root.
-     *
-     * @return string Absolute path to the fake project root.
      */
     public function getProjectRoot(): string
     {
@@ -107,11 +85,35 @@ final readonly class FakeProjectBuilder
 
     /**
      * Returns the absolute path to the fake vendor directory.
-     *
-     * @return string Absolute path to the fake vendor directory.
      */
     public function getVendorDir(): string
     {
         return $this->vendorDir;
+    }
+
+    /**
+     * Creates `$path` when it does not exist.
+     *
+     * @throws RuntimeException if the directory cannot be created.
+     */
+    private static function ensureDirectory(string $path): void
+    {
+        if (!is_dir($path) && !mkdir($path, 0o777, recursive: true) && !is_dir($path)) {
+            throw new RuntimeException(sprintf('Could not create directory "%s".', $path));
+        }
+    }
+
+    /**
+     * Writes `$content` to `$path`, creating the parent directory.
+     *
+     * @throws RuntimeException if the file cannot be written.
+     */
+    private static function write(string $path, string $content): void
+    {
+        self::ensureDirectory(dirname($path));
+
+        if (file_put_contents($path, $content) === false) {
+            throw new RuntimeException(sprintf('Could not write file "%s".', $path));
+        }
     }
 }

@@ -5,11 +5,7 @@ declare(strict_types=1);
 namespace PHPForge\Scaffold\Console;
 
 /**
- * Abstracts `stdout` / `stderr` writes so scaffold service implementations can run unchanged under console controllers,
- * Symfony Console commands, or the standalone `bin/scaffold` binary.
- *
- * Implementations append a single trailing newline to every write (writeln semantics), mirroring Symfony Console's
- * conventions; services pass pre-formatted strings without a trailing `PHP_EOL`.
+ * Writes service messages to standard output or standard error, appending one newline per message.
  */
 interface OutputWriter
 {

@@ -4,23 +4,15 @@ declare(strict_types=1);
 
 namespace PHPForge\Scaffold\Console\Command;
 
-use PHPForge\Scaffold\Console\{SymfonyOutputWriter, VendorDirResolver};
+use PHPForge\Scaffold\Config\ProjectContext;
+use PHPForge\Scaffold\Console\SymfonyOutputWriter;
 use PHPForge\Scaffold\Services\ReapplyService;
 use Symfony\Component\Console\Attribute\AsCommand;
-use Symfony\Component\Console\Command\Command;
 use Symfony\Component\Console\Input\{InputArgument, InputInterface, InputOption};
-use Symfony\Component\Console\Output\OutputInterface;
 
 /**
- * Re-applies scaffold stubs to the project, optionally overwriting user-modified files.
- *
- * Usage example:
- * ```bash
- * vendor/bin/scaffold reapply
- * vendor/bin/scaffold reapply config/params.php
- * vendor/bin/scaffold reapply config/params.php --force
- * vendor/bin/scaffold reapply --provider=php-forge/baseline
- * ```
+ * Reapplies provider stubs to tracked files; `--force` also overwrites ejected, adopted, user-modified, `preserve`,
+ * `append` and `prepend` files.
  */
 #[AsCommand(
     name: 'reapply',
@@ -28,6 +20,9 @@ use Symfony\Component\Console\Output\OutputInterface;
 )]
 final class ReapplyCommand extends AbstractScaffoldCommand
 {
+    /**
+     * Declares the optional `file` argument and the `--force`, `--provider`, `--dry-run` and `--exit-code` options.
+     */
     protected function configure(): void
     {
         $this
@@ -49,17 +44,33 @@ final class ReapplyCommand extends AbstractScaffoldCommand
                 InputOption::VALUE_REQUIRED,
                 "Restrict reapply to a provider package name (for example, 'php-forge/baseline').",
                 '',
+            )
+            ->addOption(
+                'dry-run',
+                null,
+                InputOption::VALUE_NONE,
+                'Print the diff of every file that would change without writing anything.',
+            )
+            ->addOption(
+                'exit-code',
+                null,
+                InputOption::VALUE_NONE,
+                'With --dry-run, exit with 1 when any file would change.',
             );
     }
 
-    protected function execute(InputInterface $input, OutputInterface $output): int
+    /**
+     * Reapplies the matching tracked files.
+     *
+     * @param InputInterface $input Input with the `file` argument and the `--force`, `--provider`, `--dry-run` and
+     * `--exit-code` options.
+     * @param SymfonyOutputWriter $out Output sink that receives the reapply report and the error messages.
+     * @param string $projectRoot Absolute path of the project root.
+     *
+     * @return int Exit code of {@see ReapplyService::run()}.
+     */
+    protected function handle(InputInterface $input, SymfonyOutputWriter $out, string $projectRoot): int
     {
-        $projectRoot = $this->resolveProjectRoot($output);
-
-        if ($projectRoot === null) {
-            return Command::FAILURE;
-        }
-
         /** @var string $file */
         $file = $input->getArgument('file');
 
@@ -67,12 +78,13 @@ final class ReapplyCommand extends AbstractScaffoldCommand
         $provider = $input->getOption('provider');
 
         return (new ReapplyService())->run(
-            $projectRoot,
-            VendorDirResolver::resolve($projectRoot),
+            ProjectContext::create($projectRoot),
+            $out,
             $file,
             $provider,
             (bool) $input->getOption('force'),
-            new SymfonyOutputWriter($output),
+            (bool) $input->getOption('dry-run'),
+            (bool) $input->getOption('exit-code'),
         );
     }
 }

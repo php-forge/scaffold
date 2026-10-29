@@ -5,215 +5,82 @@ declare(strict_types=1);
 namespace PHPForge\Scaffold\Tests\Console\Command;
 
 use PHPForge\Scaffold\Console\Command\ReapplyCommand;
-use PHPForge\Scaffold\Scaffold\Lock\{Hasher, LockFile};
-use PHPForge\Scaffold\Tests\Support\TempDirectoryTrait;
-use PHPUnit\Framework\Attributes\Group;
-use PHPUnit\Framework\TestCase;
-use Symfony\Component\Console\Command\Command;
+use PHPForge\Scaffold\Tests\Provider\ReapplyCommandProvider;
+use PHPForge\Scaffold\Tests\Support\{FileAssert, InspectionProject, TempDirectoryTrait};
 use Symfony\Component\Console\Tester\CommandTester;
-use Xepozz\InternalMocker\MockerState;
+use Testo\Assert;
+use Testo\Data\DataProvider;
+use Testo\Lifecycle\{AfterTest, BeforeTest};
+use Testo\Test;
 
 use function chdir;
 use function getcwd;
 use function is_dir;
 
 /**
- * Unit tests for the Symfony Console {@see ReapplyCommand} covering single-file reapply, filter-mismatch error, and
- * the `--force` flag.
+ * Functional tests for the Symfony Console {@see ReapplyCommand} wiring the `file` argument and the `--force`,
+ * `--provider` and `--dry-run` options to the reapply service.
+ *
+ * {@see ReapplyCommandProvider} for test case data providers.
  */
-#[Group('scaffold')]
-#[Group('console-command')]
-final class ReapplyCommandTest extends TestCase
+#[Test]
+final class ReapplyCommandTest
 {
     use TempDirectoryTrait;
 
+    /**
+     * Working directory before the test, restored after it.
+     */
     private string $originalCwd = '';
 
-    public function testExecuteOverwritesUserModifiedFileWithForce(): void
+    /**
+     * Ensures the input decides the exit code and whether the user-modified file is overwritten with its stub.
+     *
+     * @param array<string, bool|string> $input Command input.
+     */
+    #[DataProvider(ReapplyCommandProvider::class . '::inputs')]
+    public function inputDecidesWhatIsReapplied(array $input, int $exitCode, string $content): void
     {
-        $this->seedTracked(
-            destination: 'config/params.php',
-            stubContent: "original\n",
-            currentContent: "user-edited\n",
-            lockHashOf: "original\n",
-        );
-
         $tester = new CommandTester(new ReapplyCommand());
 
-        $exitCode = $tester->execute(['file' => 'config/params.php', '--force' => true]);
-
-        self::assertSame(
-            0,
+        Assert::same(
+            $tester->execute($input),
             $exitCode,
-            "Reapply command must return success exit code when file is reapplied with '--force'.",
+            "Exit code must be '{$exitCode}'.",
         );
-        self::assertStringContainsString(
-            'Reapplied',
-            $tester->getDisplay(),
-            'Reapply command must indicate when a file is reapplied.',
-        );
-        self::assertSame(
-            "original\n",
-            (string) file_get_contents($this->tempDir . '/config/params.php'),
-            "'--force' must overwrite the user's content with the stub.",
+        FileAssert::contentSame(
+            "{$this->tempDir}/config/params.php",
+            $content,
+            "Content of 'config/params.php' must match.",
         );
     }
 
-    public function testExecuteReappliesUnmodifiedFileAndReportsSuccess(): void
-    {
-        $stub = "return ['key' => 'value'];\n";
-
-        $this->seedTracked(destination: 'config/params.php', stubContent: $stub, currentContent: $stub);
-
-        $tester = new CommandTester(new ReapplyCommand());
-
-        $exitCode = $tester->execute(['file' => 'config/params.php']);
-
-        self::assertSame(
-            0,
-            $exitCode,
-            'Reapply command must return success exit code when file is reapplied.',
-        );
-        self::assertStringContainsString(
-            'Reapplied',
-            $tester->getDisplay(),
-            'Reapply command must indicate when a file is reapplied.',
-        );
-    }
-
-    public function testExecuteReturnsErrorWhenFileFilterMatchesNothing(): void
-    {
-        (new LockFile($this->tempDir))->write(['providers' => [], 'files' => []]);
-
-        $tester = new CommandTester(new ReapplyCommand());
-
-        $exitCode = $tester->execute(
-            ['file' => 'nonexistent.php'],
-            ['capture_stderr_separately' => true],
-        );
-
-        self::assertSame(
-            1,
-            $exitCode,
-            'Reapply command must return error exit code when file filter matches nothing.',
-        );
-        self::assertStringContainsString(
-            'No tracked files matched',
-            $tester->getErrorOutput(),
-            'Reapply command must indicate when no tracked files match the filter.',
-        );
-    }
-
-    public function testExecuteReturnsFailureWhenGetcwdFails(): void
-    {
-        MockerState::addCondition(
-            'PHPForge\\Scaffold\\Console\\Command',
-            'getcwd',
-            [],
-            false,
-            default: true,
-        );
-
-        $tester = new CommandTester(new ReapplyCommand());
-
-        self::assertSame(
-            Command::FAILURE,
-            $tester->execute([]),
-            'Reapply command must return failure exit code when getcwd fails.',
-        );
-        self::assertStringContainsString(
-            'Unable to determine current working directory',
-            $tester->getDisplay(),
-            'Reapply command must indicate when it cannot determine the current working directory.',
-        );
-    }
-
-    public function testExecuteSkipsUserModifiedFileWithoutForce(): void
-    {
-        $this->seedTracked(
-            destination: 'config/params.php',
-            stubContent: "original\n",
-            currentContent: "user-edited\n",
-            lockHashOf: "original\n",
-        );
-
-        $tester = new CommandTester(new ReapplyCommand());
-
-        $exitCode = $tester->execute(['file' => 'config/params.php']);
-
-        self::assertSame(
-            0,
-            $exitCode,
-            'Reapply command must return success exit code when user-modified file is skipped without force.',
-        );
-        self::assertStringContainsString(
-            'user-modified',
-            $tester->getDisplay(),
-            'Reapply command must indicate when a user-modified file is skipped without force.',
-        );
-    }
-
-    protected function setUp(): void
-    {
-        $this->originalCwd = (string) getcwd();
-
-        $this->setUpTempDirectory();
-
-        chdir($this->tempDir);
-    }
-
-    protected function tearDown(): void
+    /**
+     * Restores the working directory of the runner.
+     */
+    #[AfterTest]
+    public function restoreWorkingDirectory(): void
     {
         if ($this->originalCwd !== '' && is_dir($this->originalCwd)) {
             chdir($this->originalCwd);
         }
-
-        $this->tearDownTempDirectory();
     }
 
-    private function seedTracked(
-        string $destination,
-        string $stubContent,
-        string $currentContent,
-        string|null $lockHashOf = null,
-    ): void {
-        $providerRoot = "{$this->tempDir}/vendor/pkg/name";
-        $stubRelative = "stubs/{$destination}";
-        $stubPath = "{$providerRoot}/{$stubRelative}";
+    /**
+     * Saves the working directory, seeds a tracked file the user modified and enters the project root.
+     */
+    #[BeforeTest(priority: -10)]
+    public function setUpProject(): void
+    {
+        $this->originalCwd = (string) getcwd();
 
-        $this->ensureTestDirectory(dirname($stubPath));
+        (new InspectionProject($this->tempDir))
+            ->composer(['pkg/name'])
+            ->provider('pkg/name', ['config/params.php' => "original\n"])
+            ->file('config/params.php', "original\n")
+            ->track('config/params.php', 'pkg/name')
+            ->file('config/params.php', "user-edited\n");
 
-        file_put_contents($stubPath, $stubContent);
-
-        $destAbsolute = "{$this->tempDir}/{$destination}";
-
-        $this->ensureTestDirectory(dirname($destAbsolute));
-
-        file_put_contents($destAbsolute, $currentContent);
-
-        $hasher = new Hasher();
-
-        $lockHash = $lockHashOf !== null
-            ? 'sha256:' . hash('sha256', $lockHashOf)
-            : $hasher->hash($destAbsolute);
-
-        (new LockFile($this->tempDir))->write(
-            [
-                'providers' => [
-                    'pkg/name' => [
-                        'version' => '0.1.x-dev',
-                        'path' => 'vendor/pkg/name',
-                    ],
-                ],
-                'files' => [
-                    $destination => [
-                        'hash' => $lockHash,
-                        'provider' => 'pkg/name',
-                        'source' => $stubRelative,
-                        'mode' => 'replace',
-                    ],
-                ],
-            ],
-        );
+        chdir($this->tempDir);
     }
 }

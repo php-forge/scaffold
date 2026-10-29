@@ -7,204 +7,169 @@ namespace PHPForge\Scaffold\Tests;
 use Composer\Composer;
 use Composer\Config;
 use Composer\IO\BufferIO;
-use Composer\Package\RootPackageInterface;
+use Composer\Package\RootPackage;
 use Composer\Script\Event as ScriptEvent;
 use Composer\Script\ScriptEvents;
+use PHPForge\Scaffold\Console\Message;
 use PHPForge\Scaffold\EventSubscriber;
-use PHPUnit\Framework\Attributes\Group;
-use PHPUnit\Framework\TestCase;
-use ReflectionClass;
+use PHPForge\Scaffold\Tests\Provider\EventSubscriberProvider;
+use ReflectionProperty;
+use Testo\Assert;
+use Testo\Codecov\Covers;
+use Testo\Data\DataProvider;
+use Testo\Lifecycle\{AfterTest, BeforeTest};
+use Testo\Test;
 
 /**
- * Unit tests for {@see EventSubscriber} event registration.
+ * Unit tests for {@see EventSubscriber} event registration, the `extra.scaffold.auto` guard, the vendor directory
+ * guard, and the single run per Composer process.
+ *
+ * Every Composer instance has an empty `vendor-dir`, so a run that passes the `auto` guard stops at the vendor
+ * directory guard with an error.
+ *
+ * {@see EventSubscriberProvider} for test case data providers.
  */
-#[Group('scaffold')]
-final class EventSubscriberTest extends TestCase
+#[Test]
+#[Covers(EventSubscriber::class)]
+final class EventSubscriberTest
 {
-    public function testOnPostCreateProjectShortCircuitsWhenInstallScaffoldRanIsTrue(): void
-    {
-        $reflection = new ReflectionClass(EventSubscriber::class);
-
-        $property = $reflection->getProperty('installScaffoldRan');
-
-        $property->setValue(null, true);
-
-        $io = new BufferIO();
-
-        $config = self::createStub(Config::class);
-
-        // An empty 'vendor-dir' would cause 'runScaffold' to write the 'Unable to resolve vendor-dir' error message.
-        // The early return must prevent 'runScaffold' from being reached, so the buffer must remain empty.
-        $config->method('get')->willReturn('');
-
-        $composer = self::createStub(Composer::class);
-
-        $composer->method('getConfig')->willReturn($config);
-
-        (new EventSubscriber())->onPostCreateProject(
-            new ScriptEvent(ScriptEvents::POST_CREATE_PROJECT_CMD, $composer, $io, true),
-        );
-
-        self::assertSame(
-            '',
-            $io->getOutput(),
-            "'onPostCreateProject' must short-circuit silently when 'installScaffoldRan' is 'true'.",
-        );
-    }
-    public function testRegistersPostCreateProjectCmd(): void
-    {
-        self::assertArrayHasKey(
-            ScriptEvents::POST_CREATE_PROJECT_CMD,
-            EventSubscriber::getSubscribedEvents(),
-            'Event subscriber does not register for the post-create-project-cmd event.',
-        );
-    }
-
-    public function testRegistersPostInstallCmd(): void
-    {
-        self::assertArrayHasKey(
-            ScriptEvents::POST_INSTALL_CMD,
-            EventSubscriber::getSubscribedEvents(),
-            'Event subscriber does not register for the post-install-cmd event.',
-        );
-    }
-
-    public function testRegistersPostUpdateCmd(): void
-    {
-        self::assertArrayHasKey(
-            ScriptEvents::POST_UPDATE_CMD,
-            EventSubscriber::getSubscribedEvents(),
-            'Event subscriber does not register for the post-update-cmd event.',
-        );
-    }
-
-    public function testRunScaffoldAbortsWhenVendorDirIsEmpty(): void
+    /**
+     * Ensures `auto: false` skips the run and writes only the notice.
+     */
+    public function autoFalseSkipsTheRunWithANotice(): void
     {
         $io = new BufferIO();
-
-        $config = self::createStub(Config::class);
-
-        $config->method('get')->willReturn('');
-
-        $composer = self::createStub(Composer::class);
-
-        $composer->method('getConfig')->willReturn($config);
 
         (new EventSubscriber())->onPostInstall(
-            new ScriptEvent(ScriptEvents::POST_INSTALL_CMD, $composer, $io, true),
+            self::event(ScriptEvents::POST_INSTALL_CMD, ['scaffold' => ['auto' => false]], $io),
         );
 
-        self::assertStringContainsString(
-            'Unable to resolve vendor-dir',
+        Assert::same(
             $io->getOutput(),
-            'An empty vendor-dir must short-circuit the scaffold run with a clear error on stderr.',
-        );
-    }
-
-    public function testRunScaffoldProceedsWhenScaffoldExtraIsNotArray(): void
-    {
-        // 'extra.scaffold' set to a non-array value must default to auto-enabled, so the run proceeds and the
-        // vendor-dir guard fires its error (proving the auto check did not short-circuit).
-        $io = new BufferIO();
-
-        $config = self::createStub(Config::class);
-
-        $config->method('get')->willReturn('');
-
-        $package = self::createStub(RootPackageInterface::class);
-
-        $package->method('getExtra')->willReturn(['scaffold' => 'not-an-array']);
-
-        $composer = self::createStub(Composer::class);
-
-        $composer->method('getConfig')->willReturn($config);
-        $composer->method('getPackage')->willReturn($package);
-
-        (new EventSubscriber())->onPostInstall(
-            new ScriptEvent(ScriptEvents::POST_INSTALL_CMD, $composer, $io, true),
-        );
-
-        self::assertStringContainsString(
-            'Unable to resolve vendor-dir',
-            $io->getOutput(),
-            'Non-array "extra.scaffold" must be treated as auto-enabled and let the run proceed past the auto guard.',
-        );
-    }
-
-    public function testRunScaffoldRespectsAutoFalseFlag(): void
-    {
-        $io = new BufferIO();
-
-        $config = self::createStub(Config::class);
-
-        // Empty 'vendor-dir' would emit the resolve error if reached; the auto guard must fire first.
-        $config->method('get')->willReturn('');
-
-        $package = self::createStub(RootPackageInterface::class);
-
-        $package->method('getExtra')->willReturn(['scaffold' => ['auto' => false]]);
-
-        $composer = self::createStub(Composer::class);
-
-        $composer->method('getConfig')->willReturn($config);
-        $composer->method('getPackage')->willReturn($package);
-
-        (new EventSubscriber())->onPostInstall(
-            new ScriptEvent(ScriptEvents::POST_INSTALL_CMD, $composer, $io, true),
-        );
-
-        self::assertStringContainsString(
-            'Auto-scaffold disabled',
-            $io->getOutput(),
-            'Explicit "extra.scaffold.auto = false" must short-circuit auto-trigger with a clear notice.',
-        );
-        self::assertStringNotContainsString(
-            'Unable to resolve vendor-dir',
-            $io->getOutput(),
-            'When auto is disabled, the run must return BEFORE the vendor-dir guard.',
-        );
-    }
-
-    public function testRunScaffoldRunsWhenAutoFlagIsExplicitlyTrue(): void
-    {
-        // Explicit 'auto: true' must behave identical to the default and let the run proceed; we assert via the
-        // vendor-dir guard which fires further down the runScaffold pipeline.
-        $io = new BufferIO();
-
-        $config = self::createStub(Config::class);
-
-        $config->method('get')->willReturn('');
-
-        $package = self::createStub(RootPackageInterface::class);
-
-        $package->method('getExtra')->willReturn(['scaffold' => ['auto' => true]]);
-
-        $composer = self::createStub(Composer::class);
-
-        $composer->method('getConfig')->willReturn($config);
-        $composer->method('getPackage')->willReturn($package);
-
-        (new EventSubscriber())->onPostInstall(
-            new ScriptEvent(ScriptEvents::POST_INSTALL_CMD, $composer, $io, true),
-        );
-
-        self::assertStringContainsString(
-            'Unable to resolve vendor-dir',
-            $io->getOutput(),
-            'Explicit "auto: true" must let the run proceed past the auto guard.',
+            Message::SCAFFOLD_AUTO_DISABLED->getMessage() . PHP_EOL,
+            'Only the auto-disabled notice may be written.',
         );
     }
 
     /**
-     * Resets {@see EventSubscriber::$installScaffoldRan} so each test starts with a clean lifecycle slate; keeps the
-     * suite order-independent regardless of which event handlers previous tests invoked.
+     * Ensures `post-create-project-cmd` runs when no install or update ran before it.
      */
-    protected function setUp(): void
+    public function postCreateProjectRunsWhenNoInstallOrUpdateRan(): void
     {
-        $reflection = new ReflectionClass(EventSubscriber::class);
+        $io = new BufferIO();
 
-        $property = $reflection->getProperty('installScaffoldRan');
+        (new EventSubscriber())->onPostCreateProject(self::event(ScriptEvents::POST_CREATE_PROJECT_CMD, [], $io));
 
-        $property->setValue(null, false);
+        Assert::same(
+            $io->getOutput(),
+            Message::SCAFFOLD_VENDOR_DIR_UNRESOLVABLE->getMessage() . PHP_EOL,
+            'The run must reach the vendor directory guard.',
+        );
+    }
+
+    /**
+     * Ensures `post-create-project-cmd` writes nothing after `post-install-cmd` ran.
+     */
+    public function postCreateProjectSkipsTheRunAfterPostInstall(): void
+    {
+        $subscriber = new EventSubscriber();
+        $io = new BufferIO();
+
+        $subscriber->onPostInstall(self::event(ScriptEvents::POST_INSTALL_CMD, [], new BufferIO()));
+        $subscriber->onPostCreateProject(self::event(ScriptEvents::POST_CREATE_PROJECT_CMD, [], $io));
+
+        Assert::same(
+            $io->getOutput(),
+            '',
+            'The second run must write nothing.',
+        );
+    }
+
+    /**
+     * Ensures `post-create-project-cmd` writes nothing after `post-update-cmd` ran.
+     */
+    public function postCreateProjectSkipsTheRunAfterPostUpdate(): void
+    {
+        $subscriber = new EventSubscriber();
+        $io = new BufferIO();
+
+        $subscriber->onPostUpdate(self::event(ScriptEvents::POST_UPDATE_CMD, [], new BufferIO()));
+        $subscriber->onPostCreateProject(self::event(ScriptEvents::POST_CREATE_PROJECT_CMD, [], $io));
+
+        Assert::same(
+            $io->getOutput(),
+            '',
+            'The second run must write nothing.',
+        );
+    }
+
+    /**
+     * Clears the process-wide run flag, so no test depends on the handlers that ran before it.
+     */
+    #[BeforeTest]
+    #[AfterTest]
+    public function resetScaffoldRanFlag(): void
+    {
+        (new ReflectionProperty(EventSubscriber::class, 'scaffoldRan'))->setValue(null, false);
+    }
+
+    /**
+     * Ensures any `extra` block without `auto: false` passes the `auto` guard.
+     *
+     * @param array<string, mixed> $extra Root package `extra` block.
+     */
+    #[DataProvider(EventSubscriberProvider::class . '::autoEnabledExtra')]
+    public function runPassesTheAutoGuardWhenAutoIsNotFalse(array $extra): void
+    {
+        $io = new BufferIO();
+
+        (new EventSubscriber())->onPostInstall(self::event(ScriptEvents::POST_INSTALL_CMD, $extra, $io));
+
+        Assert::same(
+            $io->getOutput(),
+            Message::SCAFFOLD_VENDOR_DIR_UNRESOLVABLE->getMessage() . PHP_EOL,
+            'The run must reach the vendor directory guard.',
+        );
+    }
+
+    /**
+     * Ensures each subscribed script event maps to its handler.
+     */
+    public function subscribesTheThreeScriptEvents(): void
+    {
+        Assert::same(
+            EventSubscriber::getSubscribedEvents(),
+            [
+                ScriptEvents::POST_CREATE_PROJECT_CMD => 'onPostCreateProject',
+                ScriptEvents::POST_INSTALL_CMD => 'onPostInstall',
+                ScriptEvents::POST_UPDATE_CMD => 'onPostUpdate',
+            ],
+            'Each script event must map to its handler.',
+        );
+    }
+
+    /**
+     * Returns a script event for a Composer instance with an empty `vendor-dir` and a root package holding `$extra`.
+     *
+     * @param string $name Script event name.
+     * @param array<string, mixed> $extra Root package `extra` block.
+     * @param BufferIO $io IO bound to the event.
+     */
+    private static function event(string $name, array $extra, BufferIO $io): ScriptEvent
+    {
+        $config = new Config(false);
+
+        $config->merge(['config' => ['vendor-dir' => '']]);
+
+        $package = new RootPackage('fixture/root', '1.0.0.0', '1.0.0');
+
+        $package->setExtra($extra);
+
+        $composer = new Composer();
+
+        $composer->setConfig($config);
+        $composer->setPackage($package);
+
+        return new ScriptEvent($name, $composer, $io, true);
     }
 }

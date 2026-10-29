@@ -1,0 +1,8 @@
+# Application environment
+APP_ENV=dev
+APP_DEBUG=true
+
+# Database
+DB_DSN=mysql:host=localhost;dbname=app
+DB_USER=root
+DB_PASSWORD=

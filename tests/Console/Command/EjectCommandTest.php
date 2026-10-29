@@ -5,164 +5,88 @@ declare(strict_types=1);
 namespace PHPForge\Scaffold\Tests\Console\Command;
 
 use PHPForge\Scaffold\Console\Command\EjectCommand;
-use PHPForge\Scaffold\Scaffold\Lock\LockFile;
-use PHPForge\Scaffold\Tests\Support\TempDirectoryTrait;
-use PHPUnit\Framework\Attributes\Group;
-use PHPUnit\Framework\TestCase;
-use Symfony\Component\Console\Command\Command;
+use PHPForge\Scaffold\Tests\Support\{InspectionProject, TempDirectoryTrait};
 use Symfony\Component\Console\Tester\CommandTester;
-use Xepozz\InternalMocker\MockerState;
+use Testo\Assert;
+use Testo\Data\DataSet;
+use Testo\Lifecycle\{AfterTest, BeforeTest};
+use Testo\Test;
 
 use function chdir;
 use function getcwd;
 use function is_dir;
 
 /**
- * Unit tests for the Symfony Console {@see EjectCommand} verifying dry-run, confirmed-removal, and not-tracked paths.
+ * Functional tests for the Symfony Console {@see EjectCommand} wiring the `file` argument and the `--yes` option to
+ * the eject service.
  */
-#[Group('scaffold')]
-#[Group('console-command')]
-final class EjectCommandTest extends TestCase
+#[Test]
+final class EjectCommandTest
 {
     use TempDirectoryTrait;
 
+    /**
+     * Working directory before the test, restored after it.
+     */
     private string $originalCwd = '';
 
-    public function testExecuteOnlyPreviewsWithoutYesFlag(): void
-    {
-        $this->seedTrackedFile('config/params.php');
-
-        $tester = new CommandTester(new EjectCommand());
-
-        $exitCode = $tester->execute(['file' => 'config/params.php']);
-
-        self::assertSame(
-            0,
-            $exitCode,
-            'Eject command must return success exit code when only previewing removal.',
-        );
-        self::assertStringContainsString(
-            'Would remove',
-            $tester->getDisplay(),
-            'Eject command must indicate when it is only previewing removal.',
-        );
-
-        $data = (new LockFile($this->tempDir))->read();
-
-        self::assertArrayHasKey(
-            'config/params.php',
-            $data['files'],
-            "Without '--yes' the lock file must remain untouched (dry-run).",
-        );
-    }
-
-    public function testExecuteRemovesEntryWhenConfirmedWithYesFlag(): void
-    {
-        $this->seedTrackedFile('config/params.php');
-
-        $tester = new CommandTester(new EjectCommand());
-
-        $exitCode = $tester->execute(['file' => 'config/params.php', '--yes' => true]);
-
-        self::assertSame(
-            0,
-            $exitCode,
-            'Eject command must return success exit code when confirmed removal.',
-        );
-        self::assertStringContainsString(
-            'Removed',
-            $tester->getDisplay(),
-            'Eject command must indicate when a file has been removed.',
-        );
-
-        $data = (new LockFile($this->tempDir))->read();
-
-        self::assertArrayNotHasKey(
-            'config/params.php',
-            $data['files'],
-            "With '--yes' the tracked entry must be removed from 'scaffold-lock.json'.",
-        );
-    }
-
-    public function testExecuteReturnsErrorWhenFileIsNotTracked(): void
-    {
-        (new LockFile($this->tempDir))->write(['providers' => [], 'files' => []]);
-
-        $tester = new CommandTester(new EjectCommand());
-
-        $exitCode = $tester->execute(
-            ['file' => 'missing.php', '--yes' => true],
-            ['capture_stderr_separately' => true],
-        );
-
-        self::assertSame(
-            1,
-            $exitCode,
-            'Eject command must return error exit code when file is not tracked.',
-        );
-        self::assertStringContainsString(
-            'not tracked',
-            $tester->getErrorOutput(),
-            'Eject of an untracked file must surface an error diagnostic on stderr.',
-        );
-    }
-
-    public function testExecuteReturnsFailureWhenGetcwdFails(): void
-    {
-        MockerState::addCondition(
-            'PHPForge\\Scaffold\\Console\\Command',
-            'getcwd',
-            [],
-            false,
-            default: true,
-        );
-
-        $tester = new CommandTester(new EjectCommand());
-
-        self::assertSame(
-            Command::FAILURE,
-            $tester->execute(['file' => 'config/params.php']),
-            'Eject command must return failure exit code when getcwd fails.',
-        );
-        self::assertStringContainsString(
-            'Unable to determine current working directory',
-            $tester->getDisplay(),
-            'Eject command must indicate when the current working directory cannot be determined.',
-        );
-    }
-
-    protected function setUp(): void
-    {
-        $this->originalCwd = (string) getcwd();
-
-        $this->setUpTempDirectory();
-
-        chdir($this->tempDir);
-    }
-
-    protected function tearDown(): void
+    /**
+     * Restores the working directory of the runner.
+     */
+    #[AfterTest]
+    public function restoreWorkingDirectory(): void
     {
         if ($this->originalCwd !== '' && is_dir($this->originalCwd)) {
             chdir($this->originalCwd);
         }
-
-        $this->tearDownTempDirectory();
     }
 
-    private function seedTrackedFile(string $destination): void
+    /**
+     * Saves the working directory, seeds a tracked file and enters the project root.
+     */
+    #[BeforeTest(priority: -10)]
+    public function setUpProject(): void
     {
-        (new LockFile($this->tempDir))->write(
-            [
-                'providers' => [],
-                'files' => [
-                    $destination => [
-                        'hash' => 'sha256:abc',
-                        'provider' => 'pkg/name',
-                        'source' => 'stubs/' . $destination,
-                        'mode' => 'replace',
-                    ],
-                ],
-            ],
+        $this->originalCwd = (string) getcwd();
+
+        (new InspectionProject($this->tempDir))
+            ->composer(['pkg/name'])
+            ->provider('pkg/name', ['config/params.php' => "<?php\n"])
+            ->file('config/params.php', "<?php\n")
+            ->track('config/params.php', 'pkg/name');
+
+        chdir($this->tempDir);
+    }
+
+    /**
+     * Ensures only `--yes` marks the named lock entry as ejected; without it the lock is left untouched.
+     *
+     * @param array<string, bool> $options Command options.
+     */
+    #[DataSet([[], false], 'without yes')]
+    #[DataSet([['--yes' => true], true], 'with yes')]
+    public function yesOptionConfirmsTheEjection(array $options, bool $ejected): void
+    {
+        $tester = new CommandTester(new EjectCommand());
+
+        $exitCode = $tester->execute(['file' => 'config/params.php', ...$options]);
+
+        Assert::same(
+            $exitCode,
+            0,
+            "Exit code must be '0'.",
+        );
+
+        $entry = (new InspectionProject($this->tempDir))->lock()->read()['files']['config/params.php'] ?? null;
+
+        Assert::notNull(
+            $entry,
+            "Lock entry of 'config/params.php' must be kept.",
+        );
+        Assert::same(
+            $entry['ejected'] ?? false,
+            $ejected,
+            "Lock entry must be marked 'ejected' only with '--yes'.",
         );
     }
 }
