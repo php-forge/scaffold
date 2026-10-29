@@ -17,7 +17,9 @@ use function is_string;
 use function ltrim;
 use function realpath;
 use function rtrim;
+use function str_replace;
 use function str_starts_with;
+use function stripos;
 
 /**
  * Resolves absolute scaffold paths from roots and relative segments that callers have already validated with
@@ -107,7 +109,7 @@ final class PathResolver
 
         $candidate = self::realpathOrFallback($expanded);
 
-        if (str_starts_with($candidate . DIRECTORY_SEPARATOR, $safeVendorDir . DIRECTORY_SEPARATOR)) {
+        if (self::isWithin($candidate, $safeVendorDir, DIRECTORY_SEPARATOR === '\\')) {
             return [
                 'root' => $candidate,
                 'warning' => null,
@@ -157,5 +159,27 @@ final class PathResolver
         }
 
         return null;
+    }
+
+    /**
+     * Returns whether `$path` is `$directory` or lies inside it, treating `/` and `\` as the same separator and
+     * ignoring case when `$caseInsensitive` is `true`.
+     *
+     * A path that `realpath()` could not resolve keeps the separators it was joined with, so on Windows it can mix both.
+     *
+     * @param string $path Absolute path to check.
+     * @param string $directory Absolute path of the containing directory.
+     * @param bool $caseInsensitive Whether to compare ignoring case, as Windows filesystems do.
+     *
+     * @return bool `true` when `$path` is `$directory` or one of its descendants, `false` otherwise.
+     */
+    private static function isWithin(string $path, string $directory, bool $caseInsensitive): bool
+    {
+        $normalizedPath = str_replace('\\', '/', $path) . '/';
+        $normalizedDirectory = str_replace('\\', '/', $directory) . '/';
+
+        return $caseInsensitive
+            ? stripos($normalizedPath, $normalizedDirectory) === 0
+            : str_starts_with($normalizedPath, $normalizedDirectory);
     }
 }

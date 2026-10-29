@@ -42,9 +42,6 @@ final class FilesystemTest
      */
     private const string FAILURE = 'Operation failed.';
 
-    /**
-     * Ensures the copy holds the source content.
-     */
     public function copyCopiesTheFile(): void
     {
         file_put_contents("{$this->tempDir}/source.txt", "content\n");
@@ -58,9 +55,6 @@ final class FilesystemTest
         );
     }
 
-    /**
-     * Ensures the source permission bits are applied masked by the umask.
-     */
     public function copyPermissionsAppliesTheSourceBitsMaskedByTheUmask(): void
     {
         if (DIRECTORY_SEPARATOR === '\\') {
@@ -87,9 +81,6 @@ final class FilesystemTest
         );
     }
 
-    /**
-     * Ensures a failed call restores the previous error handler and never reaches it.
-     */
     public function errorHandlerIsRestoredAndNeverReachedWhenTheCallFails(): void
     {
         $calls = 0;
@@ -133,9 +124,6 @@ final class FilesystemTest
         );
     }
 
-    /**
-     * Ensures a successful call restores the previous error handler.
-     */
     public function errorHandlerIsRestoredWhenTheCallSucceeds(): void
     {
         file_put_contents("{$this->tempDir}/a.txt", 'a');
@@ -161,9 +149,6 @@ final class FilesystemTest
         );
     }
 
-    /**
-     * Ensures the hash is the hexadecimal SHA-256 of the content.
-     */
     public function hashReturnsTheSha256OfTheContent(): void
     {
         file_put_contents("{$this->tempDir}/a.txt", "content\n");
@@ -175,9 +160,6 @@ final class FilesystemTest
         );
     }
 
-    /**
-     * Ensures a directory is empty only when it holds no entry.
-     */
     public function isEmptyDirectoryReportsWhetherTheDirectoryHoldsEntries(): void
     {
         mkdir("{$this->tempDir}/empty");
@@ -194,9 +176,6 @@ final class FilesystemTest
         );
     }
 
-    /**
-     * Ensures every created directory gets the full permission bits masked by the umask.
-     */
     public function mkdirAppliesFullPermissionsMaskedByTheUmask(): void
     {
         if (DIRECTORY_SEPARATOR === '\\') {
@@ -218,9 +197,6 @@ final class FilesystemTest
         );
     }
 
-    /**
-     * Ensures every missing parent directory is created.
-     */
     public function mkdirCreatesMissingParents(): void
     {
         Filesystem::mkdir("{$this->tempDir}/a/b/c", self::FAILURE);
@@ -231,9 +207,6 @@ final class FilesystemTest
         );
     }
 
-    /**
-     * Ensures the target of a symbolic link is returned as stored.
-     */
     public function readLinkReturnsTheStoredTarget(): void
     {
         if (DIRECTORY_SEPARATOR === '\\') {
@@ -249,9 +222,6 @@ final class FilesystemTest
         );
     }
 
-    /**
-     * Ensures the file content is returned.
-     */
     public function readReturnsTheContent(): void
     {
         file_put_contents("{$this->tempDir}/a.txt", "content\n");
@@ -263,9 +233,6 @@ final class FilesystemTest
         );
     }
 
-    /**
-     * Ensures the file is deleted.
-     */
     public function removeDeletesTheFile(): void
     {
         file_put_contents("{$this->tempDir}/a.txt", 'a');
@@ -278,9 +245,6 @@ final class FilesystemTest
         );
     }
 
-    /**
-     * Ensures an empty directory is removed.
-     */
     public function removeDirectoryRemovesAnEmptyDirectory(): void
     {
         mkdir("{$this->tempDir}/empty");
@@ -293,9 +257,6 @@ final class FilesystemTest
         );
     }
 
-    /**
-     * Ensures a missing permission source throws with the PHP warning as the reason.
-     */
     public function throwRuntimeExceptionWhenCopyPermissionsSourceIsMissing(): void
     {
         file_put_contents("{$this->tempDir}/copy.sh", 'x');
@@ -311,9 +272,6 @@ final class FilesystemTest
         Filesystem::copyPermissions("{$this->tempDir}/missing.sh", "{$this->tempDir}/copy.sh", self::FAILURE);
     }
 
-    /**
-     * Ensures a missing copy source throws with the PHP warning as the reason.
-     */
     public function throwRuntimeExceptionWhenCopySourceIsMissing(): void
     {
         $source = "{$this->tempDir}/missing.txt";
@@ -329,9 +287,6 @@ final class FilesystemTest
         Filesystem::copy($source, "{$this->tempDir}/copy.txt", self::FAILURE);
     }
 
-    /**
-     * Ensures a missing hashed file throws with the PHP warning as the reason.
-     */
     public function throwRuntimeExceptionWhenHashedFileIsMissing(): void
     {
         $path = "{$this->tempDir}/missing.txt";
@@ -347,9 +302,6 @@ final class FilesystemTest
         Filesystem::hash($path, self::FAILURE);
     }
 
-    /**
-     * Ensures listing a regular file as a directory throws with the PHP warning as the reason.
-     */
     public function throwRuntimeExceptionWhenListedDirectoryIsARegularFile(): void
     {
         $path = "{$this->tempDir}/a.txt";
@@ -357,27 +309,25 @@ final class FilesystemTest
         file_put_contents($path, 'a');
 
         Expect::exception(RuntimeException::class)
-            ->withMessageMatchingRegex(self::failurePattern("scandir({$path}): Failed to open directory: "));
+            ->withMessageMatchingRegex(
+                self::failurePattern("scandir({$path}): "),
+            );
 
         Filesystem::isEmptyDirectory($path, self::FAILURE);
     }
 
-    /**
-     * Ensures a parent path that is a regular file makes the directory creation throw.
-     */
     public function throwRuntimeExceptionWhenMkdirParentIsARegularFile(): void
     {
         file_put_contents("{$this->tempDir}/blocker", 'x');
 
         Expect::exception(RuntimeException::class)
-            ->withMessageMatchingRegex(self::failurePattern('mkdir(): '));
+            ->withMessageMatchingRegex(
+                self::failurePattern('mkdir(): '),
+            );
 
         Filesystem::mkdir("{$this->tempDir}/blocker/sub", self::FAILURE);
     }
 
-    /**
-     * Ensures a missing file throws on read with the PHP warning as the reason.
-     */
     public function throwRuntimeExceptionWhenReadFileIsMissing(): void
     {
         $path = "{$this->tempDir}/missing.txt";
@@ -393,34 +343,27 @@ final class FilesystemTest
         Filesystem::read($path, self::FAILURE);
     }
 
-    /**
-     * Ensures reading a regular file as a symbolic link throws.
-     */
-    public function throwRuntimeExceptionWhenReadLinkTargetIsNotALink(): void
+    public function throwRuntimeExceptionWhenReadLinkTargetIsMissing(): void
     {
-        file_put_contents("{$this->tempDir}/a.txt", 'a');
-
         Expect::exception(RuntimeException::class)
-            ->withMessageMatchingRegex(self::failurePattern('readlink(): '));
+            ->withMessageMatchingRegex(
+                self::failurePattern('readlink(): '),
+            );
 
-        Filesystem::readLink("{$this->tempDir}/a.txt", self::FAILURE);
+        Filesystem::readLink("{$this->tempDir}/missing.txt", self::FAILURE);
     }
 
-    /**
-     * Ensures reading a directory as a file throws.
-     */
     public function throwRuntimeExceptionWhenReadPathIsADirectory(): void
     {
         Expect::exception(RuntimeException::class)
-            ->withMessageContaining(self::FAILURE . ' Reason: file_get_contents(');
+            ->withMessageContaining(
+                self::FAILURE . ' Reason: file_get_contents(',
+            );
 
         // A directory reads as an empty string with a PHP notice, which counts as a failure.
         Filesystem::read($this->tempDir, self::FAILURE);
     }
 
-    /**
-     * Ensures removing a non-empty directory throws.
-     */
     public function throwRuntimeExceptionWhenRemovedDirectoryIsNotEmpty(): void
     {
         mkdir("{$this->tempDir}/full");
@@ -437,35 +380,30 @@ final class FilesystemTest
         Filesystem::removeDirectory("{$this->tempDir}/full", self::FAILURE);
     }
 
-    /**
-     * Ensures removing a directory as a file throws.
-     */
     public function throwRuntimeExceptionWhenRemovedFileIsADirectory(): void
     {
         mkdir("{$this->tempDir}/dir");
 
         Expect::exception(RuntimeException::class)
-            ->withMessageMatchingRegex(self::failurePattern("unlink({$this->tempDir}/dir): "));
+            ->withMessageMatchingRegex(
+                self::failurePattern("unlink({$this->tempDir}/dir): "),
+            );
 
         Filesystem::remove("{$this->tempDir}/dir", self::FAILURE);
     }
 
-    /**
-     * Ensures writing to a directory as a file throws.
-     */
     public function throwRuntimeExceptionWhenWrittenPathIsADirectory(): void
     {
         mkdir("{$this->tempDir}/dir");
 
         Expect::exception(RuntimeException::class)
-            ->withMessageMatchingRegex(self::failurePattern("file_put_contents({$this->tempDir}/dir): Failed to open stream: "));
+            ->withMessageMatchingRegex(
+                self::failurePattern("file_put_contents({$this->tempDir}/dir): Failed to open stream: "),
+            );
 
         Filesystem::write("{$this->tempDir}/dir", 'x', self::FAILURE);
     }
 
-    /**
-     * Ensures an atomic write replaces the file and leaves no temporary file.
-     */
     public function writeAtomicReplacesTheFileWithoutLeavingTemporaryFiles(): void
     {
         file_put_contents("{$this->tempDir}/a.json", 'old');
@@ -484,9 +422,6 @@ final class FilesystemTest
         );
     }
 
-    /**
-     * Ensures a write leaves only the new content in the file.
-     */
     public function writeCreatesOrTruncatesTheFile(): void
     {
         file_put_contents("{$this->tempDir}/a.txt", 'longer old content');

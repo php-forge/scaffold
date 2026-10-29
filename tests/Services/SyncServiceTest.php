@@ -6,6 +6,7 @@ namespace PHPForge\Scaffold\Tests\Services;
 
 use PHPForge\Scaffold\Console\Message as ConsoleMessage;
 use PHPForge\Scaffold\Exception\Message;
+use PHPForge\Scaffold\Scaffold\Lock\LockFile;
 use PHPForge\Scaffold\Services\SyncService;
 use PHPForge\Scaffold\Tests\Support\{BufferedOutputWriter, ExpectedSummary, FileAssert, InspectionProject, TempDirectoryTrait};
 use Testo\Assert;
@@ -41,12 +42,14 @@ final class SyncServiceTest
             "Exit code must be '0'.",
         );
         FileAssert::contentSame(
-            "{$this->tempDir}/a.txt", "a\n",
+            "{$this->tempDir}/a.txt",
+            "a\n",
             'Replace file must be written.',
         );
         FileAssert::contentSame(
             "{$this->tempDir}/.gitignore",
-            "/vendor\n", 'Append file must be written.',
+            "/vendor\n",
+            'Append file must be written.',
         );
         Assert::same(
             $out->stdoutBuffer,
@@ -369,7 +372,7 @@ final class SyncServiceTest
         Assert::string($out->stderrBuffer)->matchesRegex(
             '/\A' . preg_quote(
                 ConsoleMessage::SYNC_ABORTED->getMessage(
-                    Message::LOCK_UNWRITABLE->getMessage("{$this->tempDir}/scaffold-lock.json") . ' Reason: rename(',
+                    Message::LOCK_UNWRITABLE->getMessage((new LockFile($this->tempDir))->getPath()) . ' Reason: rename(',
                 ),
                 '/',
             ) . '.+\R\z/',

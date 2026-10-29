@@ -19,6 +19,7 @@ use function is_dir;
 use function is_link;
 use function mkdir;
 use function posix_geteuid;
+use function realpath;
 use function rmdir;
 use function sprintf;
 use function symlink;
@@ -108,7 +109,11 @@ trait TempDirectoryTrait
      *
      * The directory is created in the system's temp directory and is automatically removed after the test completes.
      *
-     * @throws RuntimeException if the temporary directory cannot be created.
+     * The canonical path is kept, so it matches paths that the code under test resolves with `realpath()`: Windows
+     * expands 8.3 short names (such as `RUNNER~1`) and uses its native separator, and macOS resolves `/var` to
+     * `/private/var`.
+     *
+     * @throws RuntimeException if the temporary directory cannot be created or resolved.
      */
     #[BeforeTest]
     protected function setUpTempDirectory(): void
@@ -119,7 +124,13 @@ trait TempDirectoryTrait
             throw new RuntimeException(sprintf('Could not create temp directory "%s".', $path));
         }
 
-        $this->tempDir = $path;
+        $real = realpath($path);
+
+        if ($real === false) {
+            throw new RuntimeException(sprintf('Could not resolve temp directory "%s".', $path));
+        }
+
+        $this->tempDir = $real;
     }
 
     /**

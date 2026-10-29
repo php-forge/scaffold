@@ -25,11 +25,11 @@ use function trim;
  *   header: string,
  *   lead: list<string>,
  *   body: list<string>,
- *   keys: array<string, string>,
+ *   keys: array<array-key, string>,
  *   lastKey: int,
  * }
  * @phpstan-type Document array{
- *   preambleKeys: array<string, string>,
+ *   preambleKeys: array<array-key, string>,
  *   preambleLastKey: int|null,
  *   preambleLength: int,
  *   sections: list<Section>,
@@ -81,7 +81,8 @@ final class IniMergeStrategy extends AbstractLineMergeStrategy
 
         foreach ($target['sections'] as $section) {
             $firstSection[$section['id']] ??= $section;
-            $sectionKeys[$section['id']] = [...$sectionKeys[$section['id']] ?? [], ...$section['keys']];
+            // Union keeps integer keys, which PHP makes of numeric INI keys and array unpacking would renumber.
+            $sectionKeys[$section['id']] = ($sectionKeys[$section['id']] ?? []) + $section['keys'];
         }
 
         // Blocks appended for sections the consumer lacks, keyed by section identity.

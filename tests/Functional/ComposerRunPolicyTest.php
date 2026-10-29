@@ -23,6 +23,7 @@ use Testo\Test;
 use function array_keys;
 use function file_put_contents;
 use function get_debug_type;
+use function realpath;
 
 /**
  * Functional tests for the configuration notices, failures, orphans and conflicts that {@see EventSubscriber} reports
@@ -34,9 +35,6 @@ final class ComposerRunPolicyTest
     use ComposerEventHarness;
     use TempDirectoryTrait;
 
-    /**
-     * Ensures a user edit is reported as a conflict from the provider bump on, and both edits and preserve files stay.
-     */
     public function conflictIsReportedUntilTheProviderUpdateIsTaken(): void
     {
         $builder = $this->project();
@@ -109,9 +107,6 @@ final class ComposerRunPolicyTest
         );
     }
 
-    /**
-     * Ensures a non-string `allowed-packages` entry is reported once and the valid providers are still scaffolded.
-     */
     public function nonStringAllowedPackagesEntryIsReportedAndIgnored(): void
     {
         $builder = $this->project(['allowed-packages' => ['demo/scaffold', 42]]);
@@ -131,9 +126,6 @@ final class ComposerRunPolicyTest
         );
     }
 
-    /**
-     * Ensures orphans are listed with the prune hint and counted, while the file and its lock entry stay.
-     */
     public function orphansAreListedAfterTheProviderDropsAFile(): void
     {
         $builder = $this->project();
@@ -162,9 +154,6 @@ final class ComposerRunPolicyTest
         );
     }
 
-    /**
-     * Ensures a failed file is reported and counted before the exception, and the other files are still recorded.
-     */
     public function throwScaffoldExceptionAfterSummaryWhenAFileFailsToApply(): void
     {
         $builder = $this->project();
@@ -201,12 +190,10 @@ final class ComposerRunPolicyTest
         );
     }
 
-    /**
-     * Ensures an invalid manifest of an allowed provider aborts the run after the summary, with nothing recorded.
-     */
     public function throwScaffoldExceptionWhenAnAllowedManifestIsInvalid(): void
     {
         $builder = $this->project();
+
         $io = new BufferIO();
 
         $exception = $this->failingDispatch($builder, ['copy' => ['a.txt'], 'mdoes' => []], $io);
@@ -252,7 +239,7 @@ final class ComposerRunPolicyTest
 
         $expected = Message::SCAFFOLD_ABORTED->getMessage(
             Message::LOCK_INVALID_JSON->getMessage(
-                (new LockFile($builder->getProjectRoot()))->getPath(),
+                (new LockFile((string) realpath($builder->getProjectRoot())))->getPath(),
                 'Syntax error',
             ),
         );

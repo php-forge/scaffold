@@ -6,6 +6,7 @@ namespace PHPForge\Scaffold\Tests\Services;
 
 use PHPForge\Scaffold\Console\Message as ConsoleMessage;
 use PHPForge\Scaffold\Exception\Message;
+use PHPForge\Scaffold\Scaffold\PathResolver;
 use PHPForge\Scaffold\Services\DiffService;
 use PHPForge\Scaffold\Tests\Support\{BufferedOutputWriter, InspectionProject, TempDirectoryTrait};
 use Testo\Assert;
@@ -17,6 +18,7 @@ use function dirname;
 use function file_get_contents;
 use function mkdir;
 use function preg_quote;
+use function realpath;
 use function symlink;
 use function unlink;
 
@@ -290,7 +292,10 @@ final class DiffServiceTest
             $out->stderrBuffer,
             Message::SCAFFOLD_MANIFEST_LOAD_FAILED->getMessage(
                 'p/a',
-                Message::MANIFEST_COPY_ENTRY_NOT_FOUND->getMessage('stubs/a.txt', "{$this->tempDir}/vendor/p/a"),
+                Message::MANIFEST_COPY_ENTRY_NOT_FOUND->getMessage(
+                    'stubs/a.txt',
+                    (string) realpath("{$this->tempDir}/vendor/p/a"),
+                ),
             ) . PHP_EOL
             . ConsoleMessage::COMMAND_UNSAFE_ENTRY->getMessage(
                 '../evil',
@@ -550,7 +555,7 @@ final class DiffServiceTest
     {
         $prefix = ConsoleMessage::COMMAND_FILE_ERROR->getMessage(
             $destination,
-            Message::SERVICE_CURRENT_FILE_UNREADABLE->getMessage("{$this->tempDir}/{$destination}")
+            Message::SERVICE_CURRENT_FILE_UNREADABLE->getMessage(PathResolver::destination($this->tempDir, $destination))
             . ' Reason: file_get_contents(',
         );
 

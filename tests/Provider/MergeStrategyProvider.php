@@ -70,6 +70,11 @@ final class MergeStrategyProvider
             "[*]\na = 1\n\n[*.md]\nx = 1\n\n[*]\nb = 2\n",
             "[*]\na = 1\nc = 3\n\n[*.md]\nx = 1\n\n[*]\nb = 2\n",
         ];
+        yield 'numeric key present in the consumer section is kept' => [
+            "[numbers]\n2 = provider\n",
+            "[numbers]\n1 = one\n\n[numbers]\n2 = consumer\n",
+            "[numbers]\n1 = one\n\n[numbers]\n2 = consumer\n",
+        ];
         yield 'comment lead travels with its appended section' => [
             "[*]\na = 1\n\n# Markdown\n[*.md]\nb = 2\n",
             "[*]\na = 1\n",
@@ -261,12 +266,12 @@ final class MergeStrategyProvider
         yield 'group without comment appended as entries only' => [
             "a\n\nb\nc\n",
             "a\n",
-            "a\n\nb\nc\n"
+            "a\n\nb\nc\n",
         ];
         yield 'every uncommented group appended' => [
             "a\n\nb\n",
             "x\n",
-            "x\n\na\n\nb\n"
+            "x\n\na\n\nb\n",
         ];
         yield 'entry repeated in the provider added once' => [
             "# one\nx\n\n# two\nx\ny\n",
@@ -296,17 +301,17 @@ final class MergeStrategyProvider
         yield 'CR-only consumer' => [
             "# b\nb\n",
             "a\r",
-            "a\r\r# b\rb\r"
+            "a\r\r# b\rb\r",
         ];
         yield 'consumer entry with surrounding spaces is present' => [
             "x\n",
             " x \n",
-            " x \n"
+            " x \n",
         ];
         yield 'provider entry with surrounding spaces is trimmed' => [
             " x \n",
             "x\n",
-            "x\n"
+            "x\n",
         ];
         yield 'provider header with trailing spaces matches the consumer header' => [
             "# cache  \n.cache\n",
@@ -326,7 +331,7 @@ final class MergeStrategyProvider
         yield 'consecutive provider comments head one group' => [
             "# a\n# b\nx\n",
             "y\n",
-            "y\n\n# a\n# b\nx\n"
+            "y\n\n# a\n# b\nx\n",
         ];
         yield 'differing comments alone change nothing' => [
             "# Local AI agent config (if present)\n.claude\n",

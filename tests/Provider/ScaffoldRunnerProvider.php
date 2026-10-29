@@ -38,7 +38,7 @@ final class ScaffoldRunnerProvider
         ];
         yield 'filesystem root as project root' => [
             '{tmp}/project/pkg',
-            '/',
+            '{root}',
             '{rel}/project/pkg',
         ];
         yield 'backslash in the install path' => [

@@ -6,6 +6,7 @@ namespace PHPForge\Scaffold\Tests\Services;
 
 use PHPForge\Scaffold\Console\Message as ConsoleMessage;
 use PHPForge\Scaffold\Exception\Message;
+use PHPForge\Scaffold\Scaffold\PathResolver;
 use PHPForge\Scaffold\Services\{DiffService, ReapplyService, ReapplySummary};
 use PHPForge\Scaffold\Tests\Provider\ReapplyServiceProvider;
 use PHPForge\Scaffold\Tests\Support\{
@@ -23,6 +24,7 @@ use Testo\Test;
 use function file_get_contents;
 use function file_put_contents;
 use function json_encode;
+use function realpath;
 
 /**
  * Unit tests for {@see ReapplyService} covering `--dry-run`, the summary line, the allowlist, orphans and exit codes.
@@ -112,7 +114,9 @@ final class ReapplyDryRunTest
         Assert::same(
             $out->stderrBuffer,
             ConsoleMessage::REAPPLY_MERGE_STRATEGY_UNKNOWN->getMessage('unknown', '.gitignore') . PHP_EOL
-            . ConsoleMessage::REAPPLY_STUB_NOT_FOUND->getMessage("{$this->tempDir}/vendor/p/a/stubs/list.txt") . PHP_EOL,
+            . ConsoleMessage::REAPPLY_STUB_NOT_FOUND->getMessage(
+                PathResolver::source((string) realpath("{$this->tempDir}/vendor/p/a"), 'stubs/list.txt'),
+            ) . PHP_EOL,
             'Unknown strategy and missing stub must be reported.',
         );
         Assert::same(

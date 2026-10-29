@@ -33,6 +33,7 @@ use function fileperms;
 use function hash;
 use function mkdir;
 use function preg_quote;
+use function realpath;
 use function str_replace;
 use function umask;
 
@@ -513,7 +514,9 @@ final class ReapplyServiceTest
         );
         Assert::same(
             $out->stderrBuffer,
-            ConsoleMessage::REAPPLY_STUB_NOT_FOUND->getMessage("{$this->tempDir}/vendor/p/a/stubs/first.txt") . PHP_EOL,
+            ConsoleMessage::REAPPLY_STUB_NOT_FOUND->getMessage(
+                PathResolver::source((string) realpath("{$this->tempDir}/vendor/p/a"), 'stubs/first.txt'),
+            ) . PHP_EOL,
             'Missing stub must be reported.',
         );
         Assert::same(

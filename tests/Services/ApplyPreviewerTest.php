@@ -113,8 +113,8 @@ final class ApplyPreviewerTest
         Expect::exception(RuntimeException::class)
             ->withMessageContaining(
                 Message::SERVICE_CURRENT_FILE_UNREADABLE->getMessage(PathResolver::destination($this->tempDir, 'a.txt'))
-                . ' Reason: file_get_contents(): Read of ',
-        );
+                . ' Reason: file_get_contents(',
+            );
 
         (new ApplyPreviewer())
             ->preview($this->mapping('a.txt', FileMode::Replace), $this->tempDir);

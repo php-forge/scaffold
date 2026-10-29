@@ -41,9 +41,6 @@ final class HasherTest
         );
     }
 
-    /**
-     * Ensures a missing file throws with the PHP warning.
-     */
     public function throwRuntimeExceptionWhenFileIsMissing(): void
     {
         $file = "{$this->tempDir}/nonexistent.txt";
@@ -59,9 +56,6 @@ final class HasherTest
         Hasher::hash($file);
     }
 
-    /**
-     * Ensures a file without read permission throws with the PHP warning.
-     */
     public function throwRuntimeExceptionWhenFileIsUnreadable(): void
     {
         $file = "{$this->tempDir}/unreadable.txt";
@@ -84,14 +78,11 @@ final class HasherTest
         Hasher::hash($file);
     }
 
-    /**
-     * Ensures a directory throws with the PHP warning.
-     */
     public function throwRuntimeExceptionWhenPathIsADirectory(): void
     {
         Expect::exception(RuntimeException::class)
             ->withMessageContaining(
-                Message::LOCK_HASH_FAILED->getMessage($this->tempDir) . ' Reason: hash_file(): Read of ',
+                Message::LOCK_HASH_FAILED->getMessage($this->tempDir) . ' Reason: hash_file(',
             );
 
         Hasher::hash($this->tempDir);

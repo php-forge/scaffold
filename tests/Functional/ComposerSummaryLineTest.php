@@ -14,6 +14,7 @@ use Testo\Test;
 use function array_keys;
 use function file_get_contents;
 use function file_put_contents;
+use function str_replace;
 use function unlink;
 
 /**
@@ -25,9 +26,6 @@ final class ComposerSummaryLineTest
     use ComposerEventHarness;
     use TempDirectoryTrait;
 
-    /**
-     * Ensures the summary appears only when a file was written or warned, and a no-op run keeps the lock bytes.
-     */
     public function summaryIsPrintedOnlyWhenSomethingWasWrittenOrWarned(): void
     {
         $builder = $this->project(['allowed-packages' => ['demo/scaffold', 'demo/missing']]);
@@ -51,7 +49,12 @@ final class ComposerSummaryLineTest
                 array_keys((new LockFile($builder->getProjectRoot()))->read()['files']),
             ],
             [
-                ['demo/scaffold' => ['version' => '1.0.0', 'path' => "{$builder->getVendorDir()}/demo/scaffold"]],
+                [
+                    'demo/scaffold' => [
+                        'version' => '1.0.0',
+                        'path' => str_replace('\\', '/', "{$builder->getVendorDir()}/demo/scaffold"),
+                    ],
+                ],
                 ['a.txt', 'b.txt'],
             ],
             'Lock must record the provider and both files.',

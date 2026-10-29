@@ -7,6 +7,7 @@ namespace PHPForge\Scaffold\Tests\Console;
 use PHPForge\Scaffold\Console\Application;
 use PHPForge\Scaffold\Console\Message as ConsoleMessage;
 use PHPForge\Scaffold\Exception\Message;
+use PHPForge\Scaffold\Scaffold\Lock\LockFile;
 use PHPForge\Scaffold\Tests\Provider\ApplicationRunProvider;
 use PHPForge\Scaffold\Tests\Support\{FileAssert, InspectionProject, TempDirectoryTrait};
 use Symfony\Component\Console\Tester\ApplicationTester;
@@ -41,8 +42,6 @@ final class ApplicationRunTest
     private string $originalCwd = '';
 
     /**
-     * Ensures a command skips a tracked file whose provider is not allowed, without writing it.
-     *
      * @param array<string, bool|string> $input Command input.
      */
     #[DataProvider(ApplicationRunProvider::class . '::commandsSkippingADeniedProvider')]
@@ -74,8 +73,6 @@ final class ApplicationRunTest
     }
 
     /**
-     * Ensures every command reading the lock reports a corrupt lock as one `[scaffold]` error and exits with `1`.
-     *
      * @param array<string, bool|string> $input Command input.
      */
     #[DataProvider(ApplicationRunProvider::class . '::commandsReadingTheLock')]
@@ -93,7 +90,7 @@ final class ApplicationRunTest
         Assert::same(
             $tester->getErrorOutput(),
             ConsoleMessage::SCAFFOLD_PREFIXED->getMessage(
-                Message::LOCK_INVALID_JSON->getMessage("{$this->tempDir}/scaffold-lock.json", 'Syntax error'),
+                Message::LOCK_INVALID_JSON->getMessage((new LockFile($this->tempDir))->getPath(), 'Syntax error'),
             )
             . PHP_EOL,
             'Error output must hold only the lock error.',
@@ -106,8 +103,6 @@ final class ApplicationRunTest
     }
 
     /**
-     * Ensures `diff` rejects any input that does not name exactly one of `file` or `--all` as a usage error.
-     *
      * @param array<string, bool|int|string> $input Command input.
      */
     #[DataSet([['command' => 'diff']], 'no target')]
@@ -135,9 +130,6 @@ final class ApplicationRunTest
         );
     }
 
-    /**
-     * Ensures `diff --all --exit-code` succeeds on a clean project, fails on a pending change and lists in lock order.
-     */
     public function diffWithExitCodeAndAll(): void
     {
         $this
@@ -170,9 +162,6 @@ final class ApplicationRunTest
         );
     }
 
-    /**
-     * Ensures a missing Composer manifest is reported on the error output with the search start.
-     */
     public function missingComposerJsonIsReportedOnStderr(): void
     {
         putenv('COMPOSER=scaffold-application-run-missing.json');
@@ -204,9 +193,6 @@ final class ApplicationRunTest
         );
     }
 
-    /**
-     * Ensures a missing `--working-dir` is reported on the error output.
-     */
     public function missingWorkingDirectoryFails(): void
     {
         $tester = $this->runApplication(['command' => 'status', '-d' => "{$this->tempDir}/nope"]);
@@ -223,9 +209,6 @@ final class ApplicationRunTest
         );
     }
 
-    /**
-     * Ensures `reapply --dry-run --exit-code` prints the diff, writes nothing and exits with `1`.
-     */
     public function reapplyDryRunWritesNothing(): void
     {
         $this
@@ -242,7 +225,10 @@ final class ApplicationRunTest
             1,
             "Exit code of a pending write with '--exit-code' must be '1'.",
         );
-        Assert::string($tester->getDisplay())->contains('+a2', "Diff must print the '+a2' line.");
+        Assert::string(
+            $tester->getDisplay())->contains('+a2',
+            "Diff must print the '+a2' line.",
+        );
         FileAssert::contentSame(
             "{$this->tempDir}/a.txt",
             "a\n",
@@ -275,8 +261,6 @@ final class ApplicationRunTest
     }
 
     /**
-     * Ensures `status` finds the project root from a nested directory and from the `--working-dir` option.
-     *
      * @param string $cwd Working directory of the run.
      * @param array<string, bool|string> $input Command input.
      */
@@ -317,9 +301,6 @@ final class ApplicationRunTest
         );
     }
 
-    /**
-     * Ensures `status` renders JSON, fails a modified file with `--exit-code` and rejects an unknown format.
-     */
     public function statusJsonFormatAndExitCode(): void
     {
         $this
@@ -339,8 +320,8 @@ final class ApplicationRunTest
             "Exit code of JSON without '--exit-code' must be '0'.",
         );
         Assert::string($json->getDisplay())->contains(
-            '"a.txt": {' . PHP_EOL . '            "provider": "p/a",' . PHP_EOL . '            "mode": "replace",'
-            . PHP_EOL . '            "status": "modified"',
+            "\"a.txt\": {\n            \"provider\": \"p/a\",\n            \"mode\": \"replace\",\n"
+            . '            "status": "modified"',
             "JSON must carry the 'modified' state.",
         );
         Assert::same(

@@ -9,6 +9,7 @@ use PHPForge\Scaffold\Exception\Message;
 use PHPForge\Scaffold\Scaffold\PathResolver;
 use PHPForge\Scaffold\Tests\Provider\PathResolverProvider;
 use PHPForge\Scaffold\Tests\Support\{FileAssert, TempDirectoryTrait};
+use ReflectionMethod;
 use RuntimeException;
 use Testo\Assert;
 use Testo\Codecov\Covers;
@@ -80,6 +81,26 @@ final class PathResolverTest
     }
 
     /**
+     * @param string $path Absolute path to check.
+     * @param string $directory Absolute path of the containing directory.
+     * @param bool $caseInsensitive Whether to compare ignoring case.
+     * @param bool $expected Whether `$path` is expected inside `$directory`.
+     */
+    #[DataProvider(PathResolverProvider::class . '::within')]
+    public function isWithinHonorsSeparatorsAndCaseInsensitiveFlag(
+        string $path,
+        string $directory,
+        bool $caseInsensitive,
+        bool $expected,
+    ): void {
+        Assert::same(
+            (new ReflectionMethod(PathResolver::class, 'isWithin'))->invoke(null, $path, $directory, $caseInsensitive),
+            $expected,
+            'Containment check must treat both separators alike and honor the case flag.',
+        );
+    }
+
+    /**
      * @param 'destination'|'source' $method Join method.
      */
     #[DataProvider(PathResolverProvider::class . '::joins')]
@@ -89,7 +110,7 @@ final class PathResolverTest
             $method === 'destination'
                 ? PathResolver::destination($base, $relative)
                 : PathResolver::source($base, $relative),
-            str_replace('/', DIRECTORY_SEPARATOR, $expected),
+            $expected,
             'Joined path must hold one separator between its parts.',
         );
     }
@@ -247,7 +268,8 @@ final class PathResolverTest
     }
 
     /**
-     * Replaces the `{tmp}` and `{real}` placeholders with the temporary directory and its canonical path.
+     * Replaces the `{tmp}` and `{real}` placeholders with the temporary directory and its canonical path, and `{/}`
+     * with the platform separator that the resolver joins with.
      *
      * @param string $path Path with placeholders.
      *
@@ -255,6 +277,10 @@ final class PathResolverTest
      */
     private function expand(string $path): string
     {
-        return str_replace(['{tmp}', '{real}'], [$this->tempDir, (string) realpath($this->tempDir)], $path);
+        return str_replace(
+            ['{tmp}', '{real}', '{/}'],
+            [$this->tempDir, (string) realpath($this->tempDir), DIRECTORY_SEPARATOR],
+            $path,
+        );
     }
 }

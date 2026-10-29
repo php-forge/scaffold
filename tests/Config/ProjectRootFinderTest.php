@@ -24,9 +24,38 @@ final class ProjectRootFinderTest
 {
     use TempDirectoryTrait;
 
+    public function absoluteComposerManifestRootsTheProjectAtItsDirectory(): void
+    {
+        mkdir("{$this->tempDir}/app/src", 0o777, true);
+        file_put_contents(
+            "{$this->tempDir}/app/custom.json",
+            '{}',
+        );
+
+        try {
+            putenv("COMPOSER={$this->tempDir}/app/custom.json");
+
+            $existing = ProjectRootFinder::find("{$this->tempDir}/app/src");
+
+            putenv("COMPOSER={$this->tempDir}/app/missing.json");
+
+            $missing = ProjectRootFinder::find("{$this->tempDir}/app/src");
+        } finally {
+            putenv('COMPOSER');
+        }
+
+        Assert::same(
+            $existing,
+            "{$this->tempDir}/app",
+            'Absolute manifest must root the project at its directory.',
+        );
+        Assert::null(
+            $missing,
+            "Missing absolute manifest yields 'null'.",
+        );
+    }
+
     /**
-     * Ensures the nearest directory holding the manifest is returned without a trailing separator.
-     *
      * @param string $start Start directory relative to the project root, with a trailing separator.
      */
     #[DataSet(['/src/deep/'], 'nested directory')]
@@ -46,9 +75,6 @@ final class ProjectRootFinderTest
         );
     }
 
-    /**
-     * Ensures the manifest named by `COMPOSER` is searched instead of `composer.json`.
-     */
     public function honorsComposerEnvironmentVariable(): void
     {
         file_put_contents(
@@ -76,9 +102,6 @@ final class ProjectRootFinderTest
         );
     }
 
-    /**
-     * Ensures the search yields `null` once it reaches the filesystem root.
-     */
     public function returnsNullWhenFilesystemRootIsReached(): void
     {
         mkdir("{$this->tempDir}/a", 0o777, true);

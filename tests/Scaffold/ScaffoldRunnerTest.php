@@ -18,11 +18,14 @@ use Testo\Data\DataProvider;
 use Testo\Test;
 
 use function array_key_exists;
+use function dirname;
 use function file_put_contents;
 use function implode;
 use function ltrim;
 use function realpath;
 use function str_replace;
+use function strlen;
+use function substr;
 
 /**
  * Unit tests for {@see ScaffoldRunner} applying provider files without Composer's IO and package classes.
@@ -50,9 +53,8 @@ final class ScaffoldRunnerTest
 
         $lock->write($data);
 
-        $summary = $this->runner(
-            ['p/a'],
-            new BufferedOutputWriter())->run(
+        $summary = $this->runner(['p/a'], new BufferedOutputWriter())
+            ->run(
                 new ProjectConfig(['p/a']),
                 ['p/a' => new ProviderPackage('p/a', '1.0.0', "{$this->tempDir}/vendor/p/a")],
                 $this->tempDir,
@@ -76,9 +78,8 @@ final class ScaffoldRunnerTest
             ->provider('p/a', ['a.txt' => "block\n"], ['a.txt' => 'append'])
             ->file('a.txt', "mine\nblock\n");
 
-        $summary = $this->runner(
-            ['p/a'],
-            new BufferedOutputWriter())->run(
+        $summary = $this->runner(['p/a'], new BufferedOutputWriter())
+            ->run(
                 new ProjectConfig(['p/a']),
                 ['p/a' => new ProviderPackage('p/a', '1.0.0', "{$this->tempDir}/vendor/p/a")],
                 $this->tempDir,
@@ -105,8 +106,7 @@ final class ScaffoldRunnerTest
 
         $out = new BufferedOutputWriter();
 
-        $summary = $this->runner(
-            ['p/a', 'p/b'], $out)
+        $summary = $this->runner(['p/a', 'p/b'], $out)
             ->run(
                 new ProjectConfig(['p/a', 'p/b']),
                 [
@@ -162,9 +162,8 @@ final class ScaffoldRunnerTest
             ->file('a.txt', "mine\n")
             ->track('a.txt', 'p/a', 'replace', ['ejected' => true]);
 
-        $summary = $this->runner(
-            ['p/a'],
-            new BufferedOutputWriter())->run(
+        $summary = $this->runner(['p/a'], new BufferedOutputWriter())
+            ->run(
                 new ProjectConfig(['p/a']),
                 ['p/a' => new ProviderPackage('p/a', '1.0.0', "{$this->tempDir}/vendor/p/a")],
                 $this->tempDir,
@@ -205,12 +204,12 @@ final class ScaffoldRunnerTest
 
         $out = new BufferedOutputWriter();
 
-        $this->runner(
-            ['p/a'],
-            $out)->run(new ProjectConfig(['p/a']),
-            $providers,
-            $this->tempDir,
-        );
+        $this->runner(['p/a'], $out)
+            ->run(
+                new ProjectConfig(['p/a']),
+                $providers,
+                $this->tempDir,
+            );
 
         FileAssert::contentSame(
             "{$this->tempDir}/a.txt",
@@ -224,13 +223,13 @@ final class ScaffoldRunnerTest
 
         $forced = new BufferedOutputWriter();
 
-        $summary = $this->runner(
-            ['p/a'],
-            $forced)->run(new ProjectConfig(['p/a']),
-            $providers,
-            $this->tempDir,
-            true,
-        );
+        $summary = $this->runner(['p/a'], $forced)
+            ->run(
+                new ProjectConfig(['p/a']),
+                $providers,
+                $this->tempDir,
+                true,
+            );
 
         FileAssert::contentSame(
             "{$this->tempDir}/a.txt",
@@ -257,9 +256,8 @@ final class ScaffoldRunnerTest
 
         $project->lock()->write($data);
 
-        $this->runner(
-            ['p/a'],
-            new BufferedOutputWriter())->run(
+        $this->runner(['p/a'], new BufferedOutputWriter())
+            ->run(
                 new ProjectConfig(['p/a']),
                 ['p/a' => new ProviderPackage('p/a', '1.0.0', "{$this->tempDir}/vendor/p/a")],
                 $this->tempDir,
@@ -282,9 +280,8 @@ final class ScaffoldRunnerTest
 
     public function metapackageAloneLeavesNoLockFile(): void
     {
-        $this->runner(
-            ['p/meta'],
-            new BufferedOutputWriter())->run(
+        $this->runner(['p/meta'], new BufferedOutputWriter())
+            ->run(
                 new ProjectConfig(['p/meta']),
                 ['p/meta' => new ProviderPackage('p/meta', '1.0.0', null, [])],
                 $this->tempDir,
@@ -298,12 +295,13 @@ final class ScaffoldRunnerTest
 
     public function metapackageWithoutInstallPathIsSkippedWithWarning(): void
     {
-        (new InspectionProject($this->tempDir))->provider('p/a', ['a.txt' => "a\n"]);
+        (new InspectionProject($this->tempDir))
+            ->provider('p/a', ['a.txt' => "a\n"]);
 
         $out = new BufferedOutputWriter();
 
-        $summary = $this->runner(
-            ['p/meta', 'p/a'], $out)->run(
+        $summary = $this->runner(['p/meta', 'p/a'], $out)
+            ->run(
                 new ProjectConfig(['p/meta', 'p/a']),
                 [
                     'p/meta' => new ProviderPackage('p/meta', '1.0.0', null, []),
@@ -369,9 +367,8 @@ final class ScaffoldRunnerTest
 
         $out = new BufferedOutputWriter();
 
-        $summary = $this->runner(
-            ['p/a'],
-            $out)->run(
+        $summary = $this->runner(['p/a'], $out)
+            ->run(
                 new ProjectConfig(['p/a']),
                 ['p/a' => new ProviderPackage('p/a', '1.0.0', "{$this->tempDir}/vendor/p/a")],
                 $this->tempDir,
@@ -421,12 +418,12 @@ final class ScaffoldRunnerTest
 
         $out = new BufferedOutputWriter();
 
-        $summary = $this->runner(
-            ['p/gone'],
-            $out)->run(new ProjectConfig(['p/gone']),
-            [],
-            $this->tempDir,
-        );
+        $summary = $this->runner(['p/gone'], $out)
+            ->run(
+                new ProjectConfig(['p/gone']),
+                [],
+                $this->tempDir,
+            );
 
         Assert::same(
             [$out->stderrBuffer, $summary->orphan],
@@ -530,8 +527,9 @@ final class ScaffoldRunnerTest
     }
 
     /**
-     * Replaces the `{tmp}`, `{real}` and `{rel}` placeholders with the temporary directory, its canonical path and
-     * that path without its leading separator.
+     * Replaces the `{tmp}` placeholder with the temporary directory, `{real}` with its canonical path in forward
+     * slashes as the lock records it, `{root}` with the filesystem root that holds it (a drive root on Windows) and
+     * `{rel}` with `{real}` relative to `{root}`.
      *
      * @param string $path Path with placeholders.
      *
@@ -540,8 +538,19 @@ final class ScaffoldRunnerTest
     private function expand(string $path): string
     {
         $real = (string) realpath($this->tempDir);
+        $root = $real;
 
-        return str_replace(['{tmp}', '{real}', '{rel}'], [$this->tempDir, $real, ltrim($real, '/')], $path);
+        while (dirname($root) !== $root) {
+            $root = dirname($root);
+        }
+
+        $normalized = str_replace('\\', '/', $real);
+
+        return str_replace(
+            ['{tmp}', '{real}', '{root}', '{rel}'],
+            [$this->tempDir, $normalized, $root, ltrim(substr($normalized, strlen($root)), '/')],
+            $path,
+        );
     }
 
     /**

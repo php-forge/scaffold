@@ -16,6 +16,7 @@ use Testo\Test;
 use function array_keys;
 use function file_get_contents;
 use function hash;
+use function str_replace;
 use function unlink;
 
 /**
@@ -33,15 +34,15 @@ final class PostCreateProjectTest
     use ComposerEventHarness;
     use TempDirectoryTrait;
 
-    /**
-     * Ensures each scaffold event merges the missing entry into a locked append file once, also on a second run.
-     */
     #[DataProvider(PostCreateProjectProvider::class . '::scaffoldEvents')]
     public function lockedAppendFileReceivesTheMissingEntryOnce(string $event): void
     {
         $builder = $this->project();
 
-        $manifest = ['copy' => ['.gitignore'], 'modes' => ['.gitignore' => 'append']];
+        $manifest = [
+            'copy' => ['.gitignore'],
+            'modes' => ['.gitignore' => 'append'],
+        ];
 
         $path = "{$builder->getProjectRoot()}/.gitignore";
 
@@ -81,9 +82,6 @@ final class PostCreateProjectTest
         );
     }
 
-    /**
-     * Ensures `post-create-project-cmd` does nothing after `post-install-cmd` or `post-update-cmd` in one process.
-     */
     #[DataProvider(PostCreateProjectProvider::class . '::installEvents')]
     public function postCreateProjectDoesNothingAfterAnInstallRun(string $event): void
     {
@@ -131,7 +129,12 @@ final class PostCreateProjectTest
         Assert::same(
             [$lock['providers'], array_keys($lock['files'])],
             [
-                ['demo/scaffold' => ['version' => '2.5.0', 'path' => "{$builder->getVendorDir()}/demo/scaffold"]],
+                [
+                    'demo/scaffold' => [
+                        'version' => '2.5.0',
+                        'path' => str_replace('\\', '/', "{$builder->getVendorDir()}/demo/scaffold"),
+                    ],
+                ],
                 ['.gitignore', 'config/params.php', 'src/bootstrap.php'],
             ],
             "Lock must record provider version '2.5.0' and every file.",

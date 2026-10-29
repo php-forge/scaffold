@@ -21,49 +21,49 @@ final class PathResolverProvider
             'destination',
             '/tmp/foo',
             '/bar',
-            '/tmp/foo/bar',
+            '/tmp/foo' . DIRECTORY_SEPARATOR . 'bar',
         ];
         yield 'destination with leading backslash' => [
             'destination',
             '/tmp/foo',
             '\\bar',
-            '/tmp/foo/bar',
+            '/tmp/foo' . DIRECTORY_SEPARATOR . 'bar',
         ];
         yield 'project root with trailing separator' => [
             'destination',
             '/tmp/foo/',
             'bar',
-            '/tmp/foo/bar',
+            '/tmp/foo' . DIRECTORY_SEPARATOR . 'bar',
         ];
         yield 'project root with trailing backslash' => [
             'destination',
             '/tmp/foo\\',
             'bar',
-            '/tmp/foo/bar',
+            '/tmp/foo' . DIRECTORY_SEPARATOR . 'bar',
         ];
         yield 'source with leading separator' => [
             'source',
             '/tmp/provider',
             '/file.txt',
-            '/tmp/provider/file.txt',
+            '/tmp/provider' . DIRECTORY_SEPARATOR . 'file.txt',
         ];
         yield 'source with leading backslash' => [
             'source',
             '/tmp/provider',
             '\\file.txt',
-            '/tmp/provider/file.txt',
+            '/tmp/provider' . DIRECTORY_SEPARATOR . 'file.txt',
         ];
         yield 'provider path with trailing separator' => [
             'source',
             '/tmp/provider/',
             'file.txt',
-            '/tmp/provider/file.txt',
+            '/tmp/provider' . DIRECTORY_SEPARATOR . 'file.txt',
         ];
         yield 'provider path with trailing backslash' => [
             'source',
             '/tmp/provider\\',
             'file.txt',
-            '/tmp/provider/file.txt',
+            '/tmp/provider' . DIRECTORY_SEPARATOR . 'file.txt',
         ];
     }
 
@@ -89,7 +89,7 @@ final class PathResolverProvider
             '{tmp}',
             null,
             '',
-            '{real}/pkg/name',
+            '{real}{/}pkg/name',
             null,
         ];
         yield 'lock entry not an array' => [
@@ -97,7 +97,7 @@ final class PathResolverProvider
             '{tmp}',
             'vendor/pkg/name',
             '',
-            '{real}/pkg/name',
+            '{real}{/}pkg/name',
             null,
         ];
         yield 'lock path not a string' => [
@@ -105,7 +105,7 @@ final class PathResolverProvider
             '{tmp}',
             ['path' => 1],
             '',
-            '{real}/pkg/name',
+            '{real}{/}pkg/name',
             null,
         ];
         yield 'lock path equal to the vendor directory' => [
@@ -121,7 +121,7 @@ final class PathResolverProvider
             '{tmp}',
             ['path' => '{tmp}/pkg/name'],
             '',
-            '{real}/pkg/name',
+            '{real}{/}pkg{/}name',
             null,
         ];
         yield 'absolute lock path inside vendor with a project root' => [
@@ -129,7 +129,7 @@ final class PathResolverProvider
             '{tmp}/vendor',
             ['path' => '{real}/vendor/pkg/name'],
             '{tmp}/unrelated-project-root',
-            '{real}/vendor/pkg/name',
+            '{real}{/}vendor{/}pkg{/}name',
             null,
         ];
         yield 'relative lock path expanded against the project root' => [
@@ -137,7 +137,7 @@ final class PathResolverProvider
             '{tmp}/vendor',
             ['path' => 'vendor/pkg/name'],
             '{tmp}',
-            '{real}/vendor/pkg/name',
+            '{real}{/}vendor{/}pkg{/}name',
             null,
         ];
         yield 'project root with trailing separator' => [
@@ -145,15 +145,31 @@ final class PathResolverProvider
             '{real}/proj/vendor',
             ['path' => 'vendor/pkg/name-missing'],
             '{real}/proj/',
-            '{real}/proj/vendor/pkg/name-missing',
+            '{real}/proj{/}vendor/pkg/name-missing',
             null,
+        ];
+        yield 'missing lock path with backslash separators inside vendor' => [
+            ['vendor'],
+            '{tmp}/vendor',
+            ['path' => '{real}\\vendor\\pkg\\name-missing'],
+            '',
+            '{real}\\vendor\\pkg\\name-missing',
+            null,
+        ];
+        yield 'missing lock path differing from vendor only in case' => [
+            ['vendor'],
+            '{tmp}/vendor',
+            ['path' => '{real}/VENDOR/pkg/name-missing'],
+            '',
+            DIRECTORY_SEPARATOR === '\\' ? '{real}/VENDOR/pkg/name-missing' : '{real}{/}vendor{/}pkg/name',
+            DIRECTORY_SEPARATOR === '\\' ? null : $outside,
         ];
         yield 'lock path escaping vendor' => [
             ['pkg/name'],
             '{tmp}',
             ['path' => '/etc'],
             '',
-            '{real}/pkg/name',
+            '{real}{/}pkg/name',
             $outside,
         ];
         yield 'lock path sharing a string prefix with vendor' => [
@@ -161,8 +177,22 @@ final class PathResolverProvider
             '{tmp}/vendor',
             ['path' => '{tmp}/vendorsibling'],
             '',
-            '{real}/vendor/pkg/name',
+            '{real}{/}vendor{/}pkg/name',
             $outside,
         ];
+    }
+
+    /**
+     * @return iterable<string, array{string, string, bool, bool}>
+     */
+    public static function within(): iterable
+    {
+        yield 'case-insensitive, other casing' => ['/project/vendor/foo', '/Project/vendor', true, true];
+        yield 'case-insensitive, other path' => ['/elsewhere/vendor/foo', '/Project/vendor', true, false];
+        yield 'case-insensitive, sibling sharing a string prefix' => ['/Project/vendorx', '/project/vendor', true, false];
+        yield 'case-sensitive, other casing' => ['/project/vendor/foo', '/Project/vendor', false, false];
+        yield 'case-sensitive, same casing' => ['/Project/vendor/foo', '/Project/vendor', false, true];
+        yield 'equal paths' => ['/Project/vendor', '/Project/vendor', false, true];
+        yield 'mixed separators' => ['C:\\Project/vendor\\foo', 'C:/Project\\vendor', false, true];
     }
 }

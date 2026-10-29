@@ -19,6 +19,7 @@ use Testo\Test;
 
 use function array_column;
 use function file_get_contents;
+use function str_replace;
 
 /**
  * Functional tests for the apply lifecycle across Composer events, durable eject and provider version bumps,
@@ -30,9 +31,6 @@ final class ApplyLifecycleTest
     use ComposerEventHarness;
     use TempDirectoryTrait;
 
-    /**
-     * Ensures an ejected file keeps the user content and its ejected entry, silently, on the next install.
-     */
     public function ejectThenInstallKeepsUserFile(): void
     {
         $builder = $this->project();
@@ -64,9 +62,6 @@ final class ApplyLifecycleTest
         );
     }
 
-    /**
-     * Ensures a provider bump through `post-update-cmd` applies each mode and records the new version and stub hashes.
-     */
     public function providerBumpUpdatesAppendAndReplaceLeavesPreserveAndRecordsStubHash(): void
     {
         $builder = $this->project();
@@ -110,7 +105,7 @@ final class ApplyLifecycleTest
         );
         Assert::same(
             $lock['providers']['demo/scaffold'] ?? null,
-            ['version' => '2.0.0', 'path' => $stubs],
+            ['version' => '2.0.0', 'path' => str_replace('\\', '/', $stubs)],
             "Provider version must advance to '2.0.0'.",
         );
         Assert::same(
