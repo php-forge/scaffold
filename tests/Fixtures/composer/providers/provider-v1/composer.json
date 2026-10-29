@@ -1,0 +1,23 @@
+{
+    "name": "fixture/provider",
+    "description": "Scaffold provider fixture, first release.",
+    "type": "library",
+    "license": "BSD-3-Clause",
+    "extra": {
+        "scaffold": {
+            "copy": [
+                {"from": "stubs/replace.txt", "to": "replace.txt"},
+                {"from": "stubs/edited.txt", "to": "edited.txt"},
+                {"from": "stubs/preserve.txt", "to": "config/preserve.txt"},
+                {"from": "stubs/gitignore", "to": ".gitignore"},
+                {"from": "stubs/prepend.txt", "to": "prepend.txt"},
+                {"from": "stubs/dropped.txt", "to": "docs/old/dropped.txt"}
+            ],
+            "modes": {
+                "config/preserve.txt": "preserve",
+                ".gitignore": "append",
+                "prepend.txt": "prepend"
+            }
+        }
+    }
+}

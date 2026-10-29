@@ -4,62 +4,68 @@ declare(strict_types=1);
 
 namespace PHPForge\Scaffold\Tests\Manifest;
 
-use PHPForge\Scaffold\Manifest\DefaultExcludes;
+use PHPForge\Scaffold\Manifest\{DefaultExcludes, Glob};
 use PHPForge\Scaffold\Tests\Provider\DefaultExcludesProvider;
-use PHPUnit\Framework\Attributes\DataProviderExternal;
-use PHPUnit\Framework\Attributes\Group;
-use PHPUnit\Framework\TestCase;
+use Testo\Assert;
+use Testo\Codecov\Covers;
+use Testo\Data\DataProvider;
+use Testo\Test;
 
 /**
  * Unit tests for {@see DefaultExcludes} built-in exclusion patterns.
  *
  * {@see DefaultExcludesProvider} for test case data providers.
  */
-#[Group('scaffold')]
-#[Group('manifest')]
-final class DefaultExcludesTest extends TestCase
+#[Test]
+#[Covers(DefaultExcludes::class)]
+#[Covers(Glob::class)]
+final class DefaultExcludesTest
 {
-    #[DataProviderExternal(DefaultExcludesProvider::class, 'excludedPaths')]
-    public function testExcludedPathMatchesDefaultExcludes(string $path): void
+    /**
+     * Ensures tooling, metadata and artefact paths match at least one default-exclude pattern.
+     */
+    #[DataProvider(DefaultExcludesProvider::class . '::excludedPaths')]
+    public function excludedPathMatchesTheDefaultExcludes(string $path): void
     {
-        self::assertTrue(
-            DefaultExcludes::matches($path),
-            "'{$path}' must match at least one default-exclude pattern.",
+        Assert::true(
+            Glob::matchesAny(DefaultExcludes::PATTERNS, $path),
+            "'{$path}' must match a default-exclude pattern.",
         );
     }
 
-    #[DataProviderExternal(DefaultExcludesProvider::class, 'includedPaths')]
-    public function testIncludedPathDoesNotMatchDefaultExcludes(string $path): void
+    /**
+     * Ensures project content matches no default-exclude pattern.
+     */
+    #[DataProvider(DefaultExcludesProvider::class . '::includedPaths')]
+    public function includedPathDoesNotMatchTheDefaultExcludes(string $path): void
     {
-        self::assertFalse(
-            DefaultExcludes::matches($path),
-            "'{$path}' is project content and must not match any default-exclude pattern.",
+        Assert::false(
+            Glob::matchesAny(DefaultExcludes::PATTERNS, $path),
+            "'{$path}' must not match a default-exclude pattern.",
         );
     }
 
-    #[DataProviderExternal(DefaultExcludesProvider::class, 'nonPrunableDirectories')]
-    public function testNonPrunableDirectoryIsNotMatchedByMatchesDirectory(string $relativeDir): void
+    /**
+     * Ensures a directory without a default `<dir>/**` pattern is not pruned.
+     */
+    #[DataProvider(DefaultExcludesProvider::class . '::nonPrunableDirectories')]
+    public function nonPrunableDirectoryIsNotPruned(string $directory): void
     {
-        self::assertFalse(
-            DefaultExcludes::matchesDirectory($relativeDir),
-            "'{$relativeDir}' must not be prunable: no default pattern '{$relativeDir}/**' excludes every descendant.",
+        Assert::false(
+            Glob::prunes(DefaultExcludes::PATTERNS, $directory),
+            "'{$directory}' must not be prunable.",
         );
     }
 
-    public function testPatternsArrayIsNotEmpty(): void
+    /**
+     * Ensures a directory with a default `<dir>/**` pattern is pruned.
+     */
+    #[DataProvider(DefaultExcludesProvider::class . '::prunableDirectories')]
+    public function prunableDirectoryIsPruned(string $directory): void
     {
-        self::assertNotEmpty(
-            DefaultExcludes::PATTERNS,
-            'DefaultExcludes::PATTERNS must declare at least one default-exclude pattern.',
-        );
-    }
-
-    #[DataProviderExternal(DefaultExcludesProvider::class, 'prunableDirectories')]
-    public function testPrunableDirectoryIsMatchedByMatchesDirectory(string $relativeDir): void
-    {
-        self::assertTrue(
-            DefaultExcludes::matchesDirectory($relativeDir),
-            "'{$relativeDir}' must be prunable: pattern '{$relativeDir}/**' excludes every descendant.",
+        Assert::true(
+            Glob::prunes(DefaultExcludes::PATTERNS, $directory),
+            "'{$directory}' must be prunable.",
         );
     }
 }

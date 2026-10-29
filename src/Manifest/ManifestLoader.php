@@ -4,120 +4,147 @@ declare(strict_types=1);
 
 namespace PHPForge\Scaffold\Manifest;
 
-use Composer\Package\PackageInterface;
+use PHPForge\Scaffold\Exception\Message;
+use PHPForge\Scaffold\Filesystem;
+use PHPForge\Scaffold\Security\PathValidator;
 use RuntimeException;
 
-use function in_array;
 use function is_array;
 use function is_file;
 use function is_string;
 use function json_decode;
-use function preg_match;
-use function preg_split;
-use function sprintf;
-use function str_starts_with;
 
 /**
- * Loads and expands a scaffold provider's manifest into a flat list of {@see FileMapping} entries.
- *
- * Supports both inline `extra.scaffold` declarations and external JSON manifests referenced by
- * `extra.scaffold.manifest` relative to the provider root.
+ * Loads a provider manifest, inline in `extra.scaffold` or in the provider file named by `extra.scaffold.manifest`, and
+ * expands it into file mappings.
  */
 final readonly class ManifestLoader
 {
+    /**
+     * @param ManifestSchema $schema Validates the manifest.
+     * @param ManifestExpander $expander Expands the validated manifest into file mappings.
+     */
     public function __construct(private ManifestSchema $schema, private ManifestExpander $expander) {}
 
     /**
-     * Loads the provider's manifest and expands it into concrete file mappings.
+     * Loads the provider manifest from the `extra` section of a provider package and expands it into file mappings,
+     * without Composer's package classes.
      *
-     * @param PackageInterface $package Provider Composer package.
-     * @param string $packagePath Absolute path to the provider root on disk.
+     * @param array<mixed> $extra `extra` section of the provider package.
+     * @param string $packageName Composer package name of the provider.
+     * @param string $packagePath Absolute path to the provider root.
      *
-     * @throws RuntimeException when the manifest file is missing, malformed, or structurally invalid.
+     * @throws RuntimeException when the manifest file is missing or unreadable, the manifest is invalid, or a `copy[]`
+     * path does not exist.
+     * @throws \JsonException when the external manifest file is not valid JSON.
      *
-     * @return list<FileMapping> File mappings ready for the scaffolder.
+     * @return list<FileMapping> File mappings; empty when `$extra` declares no `scaffold` object.
      */
-    public function load(PackageInterface $package, string $packagePath): array
+    public function loadFromExtra(array $extra, string $packageName, string $packagePath): array
     {
-        $extra = $package->getExtra();
-
         $scaffold = $extra['scaffold'] ?? null;
 
         if (!is_array($scaffold)) {
             return [];
         }
 
-        $raw = isset($scaffold['manifest'])
-            ? $this->readExternal($scaffold['manifest'], $package->getName(), $packagePath)
-            : $scaffold;
+        // The inline block may carry consumer-side keys ('manifest', 'allowed-packages', 'auto'); an external manifest
+        // body may not.
+        $validated = isset($scaffold['manifest'])
+            ? $this->schema->validate($this->readExternal($scaffold['manifest'], $packageName, $packagePath))
+            : $this->schema->validate($scaffold, true);
 
-        $validated = $this->schema->validate($raw);
-
-        return $this->expander->expand($validated, $packagePath, $package->getName());
+        return $this->expander->expand($validated, $packagePath, $packageName);
     }
 
     /**
-     * Reads and decodes an external manifest file referenced from `extra.scaffold.manifest`.
+     * Loads the provider manifest from the `composer.json` at the provider root and expands it into file mappings,
+     * exactly like {@see self::loadFromExtra()}.
      *
-     * @param mixed $manifestPath Raw manifest path from the provider declaration, expected to be a non-empty string.
-     * @param string $packageName Provider Composer package name (used for error messages).
-     * @param string $packagePath Absolute path to the provider root on disk.
+     * @param string $packageName Composer package name of the provider.
+     * @param string $packagePath Absolute path to the provider root.
      *
-     * @throws RuntimeException on any failure to read or decode the file.
+     * @throws RuntimeException when the provider `composer.json` or the manifest file is missing, unreadable or
+     * invalid, or a `copy[]` path does not exist.
+     * @throws \JsonException when the provider `composer.json` or the external manifest file is not valid JSON.
      *
-     * @return array<mixed> Raw decoded JSON content ready for {@see ManifestSchema::validate()}.
+     * @return list<FileMapping> File mappings; empty when the package declares no `extra.scaffold` object.
      */
-    private function readExternal(mixed $manifestPath, string $packageName, string $packagePath): array
+    public function loadFromPath(string $packageName, string $packagePath): array
     {
-        if (!is_string($manifestPath) || $manifestPath === '') {
-            throw new RuntimeException(
-                sprintf('Provider "%s": "manifest" must be a non-empty string.', $packageName),
-            );
-        }
+        $composerJson = $this->decodeFile(
+            $packagePath . '/composer.json',
+            $packageName,
+            'composer.json',
+        );
 
-        // Reject absolute paths: POSIX ('/foo'), Windows UNC/backslash ('\foo'), Windows drive ('C:\foo').
-        $isAbsolute = str_starts_with($manifestPath, '/')
-            || str_starts_with($manifestPath, '\\')
-            || preg_match('/^[A-Za-z]:/', $manifestPath) === 1;
+        $extra = $composerJson['extra'] ?? [];
 
-        if ($isAbsolute) {
-            throw new RuntimeException(
-                sprintf('Provider "%s": "manifest" must be a relative path inside the provider root.', $packageName),
-            );
-        }
+        return $this->loadFromExtra(is_array($extra) ? $extra : [], $packageName, $packagePath);
+    }
 
-        $segments = preg_split('#[/\\\\]#', $manifestPath);
-
-        if (is_array($segments) && in_array('..', $segments, true)) {
-            throw new RuntimeException(
-                sprintf('Provider "%s": "manifest" must be a relative path inside the provider root.', $packageName),
-            );
-        }
-
-        $absolutePath = $packagePath . '/' . $manifestPath;
-
+    /**
+     * Reads and decodes a provider JSON file that must contain an object.
+     *
+     * @param string $absolutePath Absolute path to the file.
+     * @param string $packageName Provider package name, used in error messages.
+     * @param string $label File description used in error messages.
+     *
+     * @throws RuntimeException when the file is missing, unreadable, or not a JSON object.
+     * @throws \JsonException when the file is not valid JSON.
+     *
+     * @return array<mixed> Decoded object.
+     */
+    private function decodeFile(string $absolutePath, string $packageName, string $label): array
+    {
         if (!is_file($absolutePath)) {
             throw new RuntimeException(
-                sprintf('Provider "%s": manifest file not found at "%s".', $packageName, $absolutePath),
+                Message::MANIFEST_PROVIDER_FILE_NOT_FOUND->getMessage($packageName, $label, $absolutePath),
             );
         }
 
-        $content = file_get_contents($absolutePath);
-
-        if ($content === false) {
-            throw new RuntimeException(
-                sprintf('Provider "%s": could not read manifest file "%s".', $packageName, $absolutePath),
-            );
-        }
+        $content = Filesystem::read(
+            $absolutePath,
+            Message::MANIFEST_PROVIDER_FILE_UNREADABLE->getMessage($packageName, $label, $absolutePath),
+        );
 
         $raw = json_decode($content, associative: true, flags: JSON_THROW_ON_ERROR);
 
         if (!is_array($raw)) {
             throw new RuntimeException(
-                sprintf('Provider "%s": manifest file "%s" must decode to an object.', $packageName, $absolutePath),
+                Message::MANIFEST_PROVIDER_FILE_NOT_OBJECT->getMessage($packageName, $label, $absolutePath),
             );
         }
 
         return $raw;
+    }
+
+    /**
+     * Reads and decodes the external manifest file named by `extra.scaffold.manifest`.
+     *
+     * @param mixed $manifestPath Raw `manifest` value, expected to be a non-empty relative path inside the provider.
+     * @param string $packageName Provider package name, used in error messages.
+     * @param string $packagePath Absolute path to the provider root.
+     *
+     * @throws RuntimeException when the path is invalid or the file is missing, unreadable, or not a JSON object.
+     * @throws \JsonException when the file is not valid JSON.
+     *
+     * @return array<mixed> Decoded manifest.
+     */
+    private function readExternal(mixed $manifestPath, string $packageName, string $packagePath): array
+    {
+        if (!is_string($manifestPath) || $manifestPath === '') {
+            throw new RuntimeException(
+                Message::MANIFEST_REFERENCE_EMPTY->getMessage($packageName),
+            );
+        }
+
+        if (PathValidator::isAbsolute($manifestPath) || PathValidator::hasTraversal($manifestPath)) {
+            throw new RuntimeException(
+                Message::MANIFEST_REFERENCE_NOT_RELATIVE->getMessage($packageName),
+            );
+        }
+
+        return $this->decodeFile($packagePath . '/' . $manifestPath, $packageName, 'manifest file');
     }
 }

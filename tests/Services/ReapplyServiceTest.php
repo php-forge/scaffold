@@ -4,1325 +4,976 @@ declare(strict_types=1);
 
 namespace PHPForge\Scaffold\Tests\Services;
 
+use PHPForge\Scaffold\Console\Message as ConsoleMessage;
+use PHPForge\Scaffold\Exception\Message;
 use PHPForge\Scaffold\Scaffold\Lock\{Hasher, LockFile};
 use PHPForge\Scaffold\Scaffold\PathResolver;
-use PHPForge\Scaffold\Services\ReapplyService;
-use PHPForge\Scaffold\Tests\Support\{BufferedOutputWriter, TempDirectoryTrait};
-use PHPUnit\Framework\Attributes\Group;
-use PHPUnit\Framework\TestCase;
-use Xepozz\InternalMocker\MockerState;
+use PHPForge\Scaffold\Services\{ReapplyService, ReapplySummary};
+use PHPForge\Scaffold\Tests\Provider\ReapplyServiceProvider;
+use PHPForge\Scaffold\Tests\Support\{
+    BufferedOutputWriter,
+    ExpectedSummary,
+    FileAssert,
+    InspectionProject,
+    TempDirectoryTrait,
+};
+use RuntimeException;
+use Testo\Assert;
+use Testo\Codecov\Covers;
+use Testo\Core\Exception\SkipTest;
+use Testo\Data\{DataProvider, DataSet};
+use Testo\Expect;
+use Testo\Test;
+
+use function chmod;
+use function dirname;
+use function file_get_contents;
+use function file_put_contents;
+use function fileperms;
+use function hash;
+use function mkdir;
+use function preg_quote;
+use function realpath;
+use function str_replace;
+use function umask;
 
 /**
- * Unit tests for {@see ReapplyService} covering single-file, provider-filter, force, and error-path branches.
+ * Unit tests for {@see ReapplyService} covering the write path: modes, filters, force, and the error paths.
+ *
+ * {@see ReapplyServiceProvider} for test case data providers.
  */
-#[Group('scaffold')]
-#[Group('services')]
-final class ReapplyServiceTest extends TestCase
+#[Test]
+#[Covers(ReapplyService::class)]
+#[Covers(ReapplySummary::class)]
+final class ReapplyServiceTest
 {
     use TempDirectoryTrait;
 
-    public function testAppendAndPrependModesCannotBeReapplied(): void
+    public function adoptedEntryIsTreatedAsUserModifiedUntilForced(): void
     {
-        $modes = ['append', 'prepend'];
-
-        foreach ($modes as $mode) {
-            $file = ".env.{$mode}.dist";
-
-            $this->seedTracked($file, "A=1\n", "A=1\n", mode: $mode);
-
-            $out = new BufferedOutputWriter();
-            (new ReapplyService())->run(
-                $this->tempDir,
-                "{$this->tempDir}/vendor",
-                file: $file,
-                provider: '',
-                force: false,
-                out: $out,
-            );
-
-            self::assertStringContainsString(
-                'cannot be safely reapplied',
-                $out->stdoutBuffer,
-                sprintf(
-                    "When a file is in '%s' mode, it cannot be safely reapplied (message must emit for append and prepend).",
-                    $mode,
-                ),
-            );
-            self::assertStringContainsString(
-                sprintf('mode "%s"', $mode),
-                $out->stdoutBuffer,
-                sprintf(
-                    "The diagnostic must name the actual mode ('%s') so users know which file-mapping entry skipped.",
-                    $mode,
-                ),
-            );
-        }
-    }
-
-    public function testAppendModeOutputEndsWithSinglePhpEolSuffix(): void
-    {
-        $this->seedTracked('.env.dist', "A=1\n", "A=1\n", mode: 'append');
+        $project = (new InspectionProject($this->tempDir))
+            ->composer(['p/a'])
+            ->provider('p/a', ['ecs.php' => "stub\n"])
+            ->file('ecs.php', "mine\n")
+            ->track('ecs.php', 'p/a', extra: ['adopted' => true]);
 
         $out = new BufferedOutputWriter();
-        (new ReapplyService())->run(
-            $this->tempDir,
-            "{$this->tempDir}/vendor",
-            file: '.env.dist',
-            provider: '',
-            force: false,
-            out: $out,
+
+        Assert::same(
+            $this->reapply($project, $out, 'ecs.php'),
+            0,
+            "Exit code of a user-modified skip must be '0'.",
+        );
+        Assert::same(
+            $out->stderrBuffer,
+            ConsoleMessage::REAPPLY_USER_MODIFIED->getMessage('ecs.php') . PHP_EOL,
+            'Adopted file must be reported as user-modified.',
+        );
+        Assert::same(
+            $out->stdoutBuffer,
+            ExpectedSummary::reapply(0, 0, 1, 0, 'user-modified') . PHP_EOL,
+            'Summary must count the skip.',
+        );
+        FileAssert::contentSame(
+            "{$this->tempDir}/ecs.php",
+            "mine\n",
+            'User content must be kept.',
         );
 
-        self::assertStringEndsWith(
-            PHP_EOL,
-            $out->stdoutBuffer,
-            "The 'cannot be safely reapplied' notice must end with PHP_EOL so shells render it on its own line.",
+        $this->reapply($project, new BufferedOutputWriter(), 'ecs.php', force: true);
+
+        FileAssert::contentSame(
+            "{$this->tempDir}/ecs.php",
+            "stub\n",
+            'Force must rewrite from the stub.',
         );
-        self::assertStringEndsNotWith(
-            PHP_EOL . PHP_EOL,
-            $out->stdoutBuffer,
-            "The 'cannot be safely reapplied' notice must end with exactly one PHP_EOL.",
+        Assert::same(
+            $project->lock()->read()['files']['ecs.php'] ?? null,
+            self::writtenEntry('ecs.php', "stub\n"),
+            "Force must record the stub hashes and clear 'adopted'.",
         );
-        self::assertStringStartsNotWith(
-            PHP_EOL,
-            $out->stdoutBuffer,
-            "The 'cannot be safely reapplied' notice must not be prefixed with PHP_EOL.",
+        Assert::same(
+            $project->lock()->read()['providers'],
+            ['p/a' => ['version' => '1.0.0', 'path' => 'vendor/p/a']],
+            'Rewritten lock must keep the providers.',
         );
     }
 
-    public function testAppendPrependModeSkipContinuesIterationToNextReapplicableEntry(): void
+    public function appendMergesTheMissingProviderLineAndRecordsTheStubHash(): void
     {
-        // Append entry first (skipped) then replace entry: the skip must 'continue' so the replace entry is reapplied.
-        $this->seedTracked('.env.dist', "A=1\n", "A=1\n", mode: 'append');
-        $this->seedTracked('config/params.php', "stub\n", "stub\n", mode: 'replace');
+        $project = (new InspectionProject($this->tempDir))
+            ->composer(['p/a'])
+            ->provider('p/a', ['.env.dist' => "A=1\nB=2\n"], ['.env.dist' => 'append'])
+            ->file('.env.dist', "A=1\nC=3\n")
+            ->track('.env.dist', 'p/a', 'append');
 
         $out = new BufferedOutputWriter();
-        (new ReapplyService())->run(
-            $this->tempDir,
-            "{$this->tempDir}/vendor",
-            file: '',
-            provider: '',
-            force: true,
-            out: $out,
+
+        Assert::same(
+            $this->reapply($project, $out, '.env.dist'),
+            0,
+            "Exit code of a merge must be '0'.",
+        );
+        FileAssert::contentSame(
+            "{$this->tempDir}/.env.dist",
+            "A=1\nC=3\n\nB=2\n",
+            'Missing line must be merged and the consumer line kept.',
+        );
+        Assert::same(
+            $out->stdoutBuffer,
+            ConsoleMessage::REAPPLY_APPLIED->getMessage('.env.dist') . PHP_EOL
+            . ExpectedSummary::reapply(1, 0, 0, 0) . PHP_EOL,
+            'Write and summary must be reported.',
         );
 
-        self::assertStringContainsString(
-            'cannot be safely reapplied',
-            $out->stdoutBuffer,
-            'The append entry must produce the non-reapplicable diagnostic.',
+        $entry = $project->lock()->read()['files']['.env.dist'] ?? [];
+
+        Assert::same(
+            [$entry['hash'] ?? null, $entry['stub-hash'] ?? null],
+            [Hasher::hash("{$this->tempDir}/.env.dist"), Hasher::hash("{$this->tempDir}/vendor/p/a/stubs/.env.dist")],
+            'Hash and stub hash must be refreshed.',
         );
-        self::assertStringContainsString(
-            'Reapplied "config/params.php"',
-            $out->stdoutBuffer,
-            "After the append skip, the foreach must 'continue' to the next entry, not 'break'.",
+
+        $second = new BufferedOutputWriter();
+
+        $this->reapply($project, $second, '.env.dist');
+
+        Assert::same(
+            $second->stdoutBuffer,
+            ConsoleMessage::REAPPLY_ALREADY_UP_TO_DATE->getMessage('.env.dist') . PHP_EOL
+            . ExpectedSummary::reapply(0, 1, 0, 0) . PHP_EOL,
+            'Second run must be a no-op.',
         );
     }
 
-    public function testEmitsWarningWhenProviderPathEscapesVendor(): void
+    public function appendUpToDateContinuesToTheNextEntry(): void
     {
-        $this->seedTracked('config/params.php', "stub\n", "stub\n");
+        $project = (new InspectionProject($this->tempDir))
+            ->composer(['p/a'])
+            ->provider('p/a', ['.env.dist' => "A=1\n", 'config/params.php' => "stub\n"], ['.env.dist' => 'append'])
+            ->file('.env.dist', "A=1\n")
+            ->file('config/params.php', "stub\n")
+            ->track('.env.dist', 'p/a', 'append')
+            ->track('config/params.php', 'p/a');
 
-        $lock = new LockFile($this->tempDir);
+        $out = new BufferedOutputWriter();
 
-        $data = $lock->read();
+        Assert::same(
+            $this->reapply($project, $out),
+            0,
+            "Exit code must be '0'.",
+        );
+        Assert::same(
+            $out->stdoutBuffer,
+            ConsoleMessage::REAPPLY_ALREADY_UP_TO_DATE->getMessage('.env.dist') . PHP_EOL
+            . ConsoleMessage::REAPPLY_APPLIED->getMessage('config/params.php') . PHP_EOL
+            . ExpectedSummary::reapply(1, 1, 0, 0) . PHP_EOL,
+            'Iteration must continue to the replace entry.',
+        );
+    }
 
-        $data['providers'] = [
-            'pkg/name' => [
-                'version' => '0.1.x-dev',
-                'path' => '../outside-vendor',
+    public function appendUsesTheMergeStrategyRecordedInTheLock(): void
+    {
+        $project = (new InspectionProject($this->tempDir))
+            ->composer(['p/a'])
+            ->provider('p/a', ['.gitignore' => "# b\nx\n"], ['.gitignore' => 'append'])
+            ->file('.gitignore', "# a\nx\n")
+            ->track('.gitignore', 'p/a', 'append', ['merge' => 'text']);
+
+        $this->reapply($project, new BufferedOutputWriter(), '.gitignore');
+
+        FileAssert::contentSame(
+            "{$this->tempDir}/.gitignore",
+            "# a\nx\n\n# b\n",
+            "Recorded 'text' strategy must override the 'list' default.",
+        );
+        Assert::same(
+            $project->lock()->read()['files']['.gitignore']['merge'] ?? null,
+            'text',
+            'Recorded strategy must be kept.',
+        );
+    }
+
+    public function appendWithAnUnreadableDestinationIsAnError(): void
+    {
+        $project = (new InspectionProject($this->tempDir))
+            ->composer(['p/a'])
+            ->provider('p/a', ['.env.dist' => "A=1\n"], ['.env.dist' => 'append'])
+            ->track('.env.dist', 'p/a', 'append');
+
+        // A directory where the destination file is expected cannot be read as a file.
+        mkdir("{$this->tempDir}/.env.dist");
+
+        $out = new BufferedOutputWriter();
+
+        Assert::same(
+            $this->reapply($project, $out, '.env.dist'),
+            1,
+            "Exit code must be '1' when the destination cannot be read.",
+        );
+
+        // The PHP notice depends on the platform and the filesystem, so the reason is matched as a pattern.
+        $expected = ConsoleMessage::REAPPLY_FAILED->getMessage(
+            '.env.dist',
+            Message::FILESYSTEM_FAILED->getMessage(
+                Message::MODE_DESTINATION_UNREADABLE->getMessage(PathResolver::destination($this->tempDir, '.env.dist')),
+                'file_get_contents(%REASON%',
+            ),
+        ) . PHP_EOL;
+
+        Assert::string($out->stderrBuffer)->matchesRegex(
+            '/\A' . str_replace('%REASON%', '.+', preg_quote($expected, '/')) . '\z/',
+            'Mode failure must be the only stderr line, with its reason.',
+        );
+        Assert::same(
+            $out->stdoutBuffer,
+            ExpectedSummary::reapply(0, 0, 0, 1) . PHP_EOL,
+            'Summary must count the error.',
+        );
+    }
+
+    public function ejectedEntryIsSkippedWithoutForce(): void
+    {
+        $project = (new InspectionProject($this->tempDir))
+            ->composer(['p/a'])
+            ->provider('p/a', ['config/params.php' => "stub\n"])
+            ->file('config/params.php', "stub\n")
+            ->track('config/params.php', 'p/a', extra: ['ejected' => true]);
+
+        $before = file_get_contents(
+            "{$this->tempDir}/scaffold-lock.json",
+        );
+
+        $out = new BufferedOutputWriter();
+
+        $this->reapply($project, $out);
+
+        Assert::same(
+            $out->stderrBuffer,
+            ConsoleMessage::REAPPLY_EJECTED->getMessage('config/params.php') . PHP_EOL,
+            'Ejected entry must be reported.',
+        );
+        Assert::same(
+            $out->stdoutBuffer,
+            ExpectedSummary::reapply(0, 0, 1, 0, 'ejected') . PHP_EOL,
+            'Summary must count the skip.',
+        );
+        Assert::same(
+            file_get_contents("{$this->tempDir}/scaffold-lock.json"),
+            $before,
+            'Lock must be untouched.',
+        );
+    }
+
+    public function ensureDirectoryFailureContinuesToTheNextEntry(): void
+    {
+        $project = (new InspectionProject($this->tempDir))
+            ->composer(['p/a'])
+            ->provider('p/a', ['deep/config/params.php' => "stub\n", 'top.txt' => "stub\n"])
+            // A regular file where the parent directory belongs blocks its creation.
+            ->file('deep/config', 'blocker')
+            ->file('top.txt', "stub\n")
+            ->track('deep/config/params.php', 'p/a')
+            ->track('top.txt', 'p/a');
+
+        $out = new BufferedOutputWriter();
+
+        Assert::same(
+            $this->reapply($project, $out, force: true),
+            1,
+            "Exit code must be '1' when a directory cannot be created.",
+        );
+        Assert::same(
+            $out->stderrBuffer,
+            ConsoleMessage::REAPPLY_FAILED->getMessage(
+                'deep/config/params.php',
+                Message::FILESYSTEM_FAILED->getMessage(
+                    Message::PATH_DIRECTORY_CREATE_FAILED->getMessage(
+                        dirname(PathResolver::destination($this->tempDir, 'deep/config/params.php')),
+                    ),
+                    'mkdir(): File exists',
+                ),
+            ) . PHP_EOL,
+            'Directory failure must be reported with its reason.',
+        );
+        Assert::same(
+            $out->stdoutBuffer,
+            ConsoleMessage::REAPPLY_APPLIED->getMessage('top.txt') . PHP_EOL
+            . ExpectedSummary::reapply(1, 0, 0, 1) . PHP_EOL,
+            'Next entry must still be reapplied.',
+        );
+    }
+
+    public function fileFilterReappliesOnlyTheMatchingEntry(): void
+    {
+        $project = (new InspectionProject($this->tempDir))
+            ->composer(['p/a'])
+            ->provider('p/a', ['a.txt' => "a\n", 'b.txt' => "b\n"])
+            ->file('a.txt', "a\n")
+            ->file('b.txt', "b\n")
+            ->track('a.txt', 'p/a')
+            ->track('b.txt', 'p/a');
+
+        $out = new BufferedOutputWriter();
+
+        $this->reapply($project, $out, 'b.txt', force: true);
+
+        Assert::same(
+            $out->stdoutBuffer,
+            ConsoleMessage::REAPPLY_APPLIED->getMessage('b.txt') . PHP_EOL
+            . ExpectedSummary::reapply(1, 0, 0, 0) . PHP_EOL,
+            "Only 'b.txt' must be reapplied.",
+        );
+    }
+
+    public function forceOverwritesAUserModifiedFileAndUpdatesTheLock(): void
+    {
+        $project = (new InspectionProject($this->tempDir))
+            ->composer(['p/a'])
+            ->provider('p/a', ['config/params.php' => "stub\n"])
+            ->file('config/params.php', "stub\n")
+            ->track('config/params.php', 'p/a')
+            ->file('config/params.php', "user-edited\n");
+
+        $out = new BufferedOutputWriter();
+
+        Assert::same(
+            $this->reapply($project, $out, 'config/params.php', force: true),
+            0,
+            "Exit code of a forced write must be '0'.",
+        );
+        Assert::same(
+            $out->stdoutBuffer,
+            ConsoleMessage::REAPPLY_APPLIED->getMessage('config/params.php') . PHP_EOL
+            . ExpectedSummary::reapply(1, 0, 0, 0) . PHP_EOL,
+            'Write must be reported.',
+        );
+        FileAssert::contentSame(
+            "{$this->tempDir}/config/params.php",
+            "stub\n",
+            'Stub must overwrite the user content.',
+        );
+        Assert::same(
+            $project->lock()->read(),
+            [
+                'providers' => ['p/a' => ['version' => '1.0.0', 'path' => 'vendor/p/a']],
+                'files' => ['config/params.php' => self::writtenEntry('config/params.php', "stub\n")],
             ],
+            'Lock must hold the new hashes and keep the providers section.',
+        );
+    }
+
+    public function forceReappliesAnEjectedEntryAndClearsTheFlag(): void
+    {
+        $project = (new InspectionProject($this->tempDir))
+            ->composer(['p/a'])
+            ->provider('p/a', ['config/params.php' => "stub\n"])
+            ->file('config/params.php', "mine\n")
+            ->track('config/params.php', 'p/a', extra: ['ejected' => true]);
+
+        $this->reapply($project, new BufferedOutputWriter(), 'config/params.php', force: true);
+
+        FileAssert::contentSame(
+            "{$this->tempDir}/config/params.php",
+            "stub\n",
+            'Stub must be written.',
+        );
+        Assert::same(
+            $project->lock()->read()['files']['config/params.php'] ?? null,
+            self::writtenEntry('config/params.php', "stub\n"),
+            "Force must clear 'ejected'.",
+        );
+    }
+
+    /**
+     * Ensures force rewrites an `append` file from its stub, discarding the consumer additions.
+     */
+    public function forceRewritesAnAppendFileFromTheStub(): void
+    {
+        $project = (new InspectionProject($this->tempDir))
+            ->composer(['p/a'])
+            ->provider('p/a', ['.env.dist' => "A=1\n"], ['.env.dist' => 'append'])
+            ->file('.env.dist', "A=1\nC=3\n")
+            ->track('.env.dist', 'p/a', 'append');
+
+        $out = new BufferedOutputWriter();
+
+        $this->reapply($project, $out, '.env.dist', force: true);
+
+        FileAssert::contentSame(
+            "{$this->tempDir}/.env.dist",
+            "A=1\n",
+            'Force must discard additions.',
+        );
+        Assert::same(
+            $out->stdoutBuffer,
+            ConsoleMessage::REAPPLY_APPLIED->getMessage('.env.dist') . PHP_EOL
+            . ExpectedSummary::reapply(1, 0, 0, 0) . PHP_EOL,
+            'Rewrite must be reported.',
+        );
+    }
+
+    public function hashFailureBeforeTheWriteContinuesToTheNextEntry(): void
+    {
+        $project = (new InspectionProject($this->tempDir))
+            ->composer(['p/a'])
+            ->provider('p/a', ['first.txt' => "stub\n", 'second.txt' => "stub\n"])
+            ->file('first.txt', "stub\n")
+            ->file('second.txt', "stub\n")
+            ->track('first.txt', 'p/a')
+            ->track('second.txt', 'p/a');
+
+        $first = PathResolver::destination($this->tempDir, 'first.txt');
+
+        $this->restrictFileAccess($first, 0o000);
+
+        $out = new BufferedOutputWriter();
+
+        Assert::same(
+            $this->reapply($project, $out),
+            1,
+            "Exit code must be '1' when a destination cannot be hashed.",
+        );
+        Assert::same(
+            $out->stderrBuffer,
+            ConsoleMessage::REAPPLY_FAILED->getMessage(
+                'first.txt',
+                Message::FILESYSTEM_FAILED->getMessage(
+                    Message::LOCK_HASH_FAILED->getMessage($first),
+                    "hash_file({$first}): Failed to open stream: Permission denied",
+                ),
+            ) . PHP_EOL,
+            "Hash failure of 'first.txt' must be reported with its reason.",
+        );
+        Assert::same(
+            $out->stdoutBuffer,
+            ConsoleMessage::REAPPLY_APPLIED->getMessage('second.txt') . PHP_EOL
+            . ExpectedSummary::reapply(1, 0, 0, 1) . PHP_EOL,
+            "'second.txt' must still be reapplied.",
+        );
+    }
+
+    public function hashFailureOfADirectoryDestinationContinuesToTheNextEntry(): void
+    {
+        $project = (new InspectionProject($this->tempDir))
+            ->composer(['p/a'])
+            ->provider('p/a', ['first.txt' => "stub\n", 'second.txt' => "stub\n"])
+            ->file('second.txt', "stub\n")
+            ->track('first.txt', 'p/a')
+            ->track('second.txt', 'p/a');
+
+        // A directory where the destination file is expected cannot be hashed before it is overwritten.
+        mkdir("{$this->tempDir}/first.txt");
+
+        $out = new BufferedOutputWriter();
+
+        Assert::same(
+            $this->reapply($project, $out, force: true),
+            1,
+            "Exit code must be '1' when a destination cannot be hashed.",
+        );
+
+        // The PHP notice depends on the platform and the filesystem, so the reason is matched as a pattern.
+        $expected = ConsoleMessage::REAPPLY_FAILED->getMessage(
+            'first.txt',
+            Message::FILESYSTEM_FAILED->getMessage(
+                Message::LOCK_HASH_FAILED->getMessage(PathResolver::destination($this->tempDir, 'first.txt')),
+                'hash_file(%REASON%',
+            ),
+        ) . PHP_EOL;
+
+        Assert::string($out->stderrBuffer)->matchesRegex(
+            '/\A' . str_replace('%REASON%', '.+', preg_quote($expected, '/')) . '\z/',
+            "Hash failure of 'first.txt' must be the only stderr line, with its reason.",
+        );
+        Assert::same(
+            $out->stdoutBuffer,
+            ConsoleMessage::REAPPLY_APPLIED->getMessage('second.txt') . PHP_EOL
+            . ExpectedSummary::reapply(1, 0, 0, 1) . PHP_EOL,
+            "'second.txt' must still be reapplied.",
+        );
+    }
+
+    public function missingStubContinuesToTheNextEntry(): void
+    {
+        $project = (new InspectionProject($this->tempDir))
+            ->composer(['p/a'])
+            ->provider('p/a', ['first.txt' => "stub\n", 'second.txt' => "stub\n"])
+            ->file('first.txt', "stub\n")
+            ->file('second.txt', "stub\n")
+            ->track('first.txt', 'p/a')
+            ->track('second.txt', 'p/a')
+            ->delete('vendor/p/a/stubs/first.txt');
+
+        $out = new BufferedOutputWriter();
+
+        Assert::same(
+            $this->reapply($project, $out, force: true),
+            1,
+            "Exit code must be '1' when a stub is missing.",
+        );
+        Assert::same(
+            $out->stderrBuffer,
+            ConsoleMessage::REAPPLY_STUB_NOT_FOUND->getMessage(
+                PathResolver::source((string) realpath("{$this->tempDir}/vendor/p/a"), 'stubs/first.txt'),
+            ) . PHP_EOL,
+            'Missing stub must be reported.',
+        );
+        Assert::same(
+            $out->stdoutBuffer,
+            ConsoleMessage::REAPPLY_APPLIED->getMessage('second.txt') . PHP_EOL
+            . ExpectedSummary::reapply(1, 0, 0, 1) . PHP_EOL,
+            "'second.txt' must still be reapplied.",
+        );
+    }
+
+    public function noFilterOnAnEmptyLockPrintsOnlyTheSummary(): void
+    {
+        $project = (new InspectionProject($this->tempDir))->composer(['p/a']);
+
+        $project->lock()->write(['providers' => [], 'files' => []]);
+
+        $out = new BufferedOutputWriter();
+
+        Assert::same(
+            $this->reapply($project, $out),
+            0,
+            "Exit code of an empty lock without filters must be '0'.",
+        );
+        Assert::same(
+            $out->stderrBuffer,
+            '',
+            'No no-match error may be written without filters.',
+        );
+        Assert::same(
+            $out->stdoutBuffer,
+            ExpectedSummary::reapply(0, 0, 0, 0) . PHP_EOL,
+            'Only the summary may be printed.',
+        );
+    }
+
+    public function prependAddsTheMissingBlockOnlyOnce(): void
+    {
+        $project = (new InspectionProject($this->tempDir))
+            ->composer(['p/a'])
+            ->provider('p/a', ['src/a.php' => "// header\n"], ['src/a.php' => 'prepend'])
+            ->file('src/a.php', "code\n")
+            ->track('src/a.php', 'p/a', 'prepend');
+
+        $this->reapply($project, new BufferedOutputWriter(), 'src/a.php');
+
+        $second = new BufferedOutputWriter();
+
+        $this->reapply($project, $second, 'src/a.php');
+
+        FileAssert::contentSame(
+            "{$this->tempDir}/src/a.php",
+            "// header\ncode\n",
+            'Block must appear once.',
+        );
+        Assert::same(
+            $second->stdoutBuffer,
+            ConsoleMessage::REAPPLY_ALREADY_UP_TO_DATE->getMessage('src/a.php') . PHP_EOL
+            . ExpectedSummary::reapply(0, 1, 0, 0) . PHP_EOL,
+            'Second run must be a no-op.',
+        );
+    }
+
+    public function preserveFileIsRestoredWhenTheDestinationIsMissing(): void
+    {
+        $project = (new InspectionProject($this->tempDir))
+            ->composer(['p/a'])
+            ->provider('p/a', ['config/web.php' => "stub\n"], ['config/web.php' => 'preserve'])
+            ->track('config/web.php', 'p/a', 'preserve');
+
+        $out = new BufferedOutputWriter();
+
+        $this->reapply($project, $out, 'config/web.php');
+
+        FileAssert::contentSame(
+            "{$this->tempDir}/config/web.php",
+            "stub\n",
+            'Missing preserve file must be restored with the exact stub content.',
+        );
+        Assert::same(
+            $out->stdoutBuffer,
+            ConsoleMessage::REAPPLY_APPLIED->getMessage('config/web.php') . PHP_EOL
+            . ExpectedSummary::reapply(1, 0, 0, 0) . PHP_EOL,
+            'Restore must be reported.',
+        );
+    }
+
+    public function preserveSkipContinuesToTheNextEntry(): void
+    {
+        $project = (new InspectionProject($this->tempDir))
+            ->composer(['p/a'])
+            ->provider(
+                'p/a',
+                ['config/web.php' => "stub\n", 'config/params.php' => "stub\n"],
+                ['config/web.php' => 'preserve'],
+            )
+            ->file('config/web.php', "current\n")
+            ->file('config/params.php', "stub\n")
+            ->track('config/web.php', 'p/a', 'preserve')
+            ->track('config/params.php', 'p/a');
+
+        $out = new BufferedOutputWriter();
+
+        Assert::same(
+            $this->reapply($project, $out),
+            0,
+            "Exit code of a preserve skip must be '0'.",
+        );
+        Assert::same(
+            $out->stderrBuffer,
+            ConsoleMessage::REAPPLY_PRESERVE->getMessage('config/web.php') . PHP_EOL,
+            'Preserve skip must be reported.',
+        );
+        Assert::same(
+            $out->stdoutBuffer,
+            ConsoleMessage::REAPPLY_APPLIED->getMessage('config/params.php') . PHP_EOL
+            . ExpectedSummary::reapply(1, 0, 1, 0, 'preserve') . PHP_EOL,
+            'Next entry must still be reapplied.',
+        );
+        FileAssert::contentSame(
+            "{$this->tempDir}/config/web.php",
+            "current\n",
+            'Preserve file must stay untouched without force.',
+        );
+    }
+
+    public function providerFilterReappliesOnlyTheMatchingEntries(): void
+    {
+        $project = (new InspectionProject($this->tempDir))
+            ->composer(['p/a', 'p/b'])
+            ->provider('p/a', ['a.txt' => "a\n"])
+            ->provider('p/b', ['b.txt' => "b2\n"])
+            ->file('a.txt', "a\n")
+            ->file('b.txt', "b1\n")
+            ->track('a.txt', 'p/a')
+            ->track('b.txt', 'p/b');
+
+        $out = new BufferedOutputWriter();
+
+        $this->reapply($project, $out, provider: 'p/b');
+
+        Assert::same(
+            $out->stdoutBuffer,
+            ConsoleMessage::REAPPLY_APPLIED->getMessage('b.txt') . PHP_EOL
+            . ExpectedSummary::reapply(1, 0, 0, 0) . PHP_EOL,
+            "Only the entry of 'p/b' must be reapplied.",
+        );
+        FileAssert::contentSame(
+            "{$this->tempDir}/b.txt",
+            "b2\n",
+            "'b.txt' must be rewritten from its stub.",
+        );
+    }
+
+    public function providerPathOutsideTheVendorDirectoryIsWarned(): void
+    {
+        $project = (new InspectionProject($this->tempDir))
+            ->composer(['p/a'])
+            ->provider('p/a', ['config/params.php' => "stub\n"])
+            ->file('config/params.php', "stub\n")
+            ->track('config/params.php', 'p/a');
+
+        $data = $project->lock()->read();
+
+        $data['providers']['p/a'] = [
+            'version' => '1.0.0',
+            'path' => '../outside-vendor',
         ];
 
-        $lock->write($data);
+        $project->lock()->write($data);
 
         $out = new BufferedOutputWriter();
-        (new ReapplyService())->run(
-            $this->tempDir,
-            "{$this->tempDir}/vendor",
-            file: 'config/params.php',
-            provider: '',
-            force: true,
-            out: $out,
-        );
 
-        self::assertStringContainsString(
-            'resolves outside vendor dir',
+        $this->reapply($project, $out, 'config/params.php', force: true);
+
+        Assert::same(
             $out->stderrBuffer,
-            'When a provider path escapes the vendor directory, a warning must be emitted.',
-        );
-        self::assertStringEndsWith(
-            PHP_EOL,
-            $out->stderrBuffer,
-            "The 'resolves outside vendor dir' warning must end with PHP_EOL.",
-        );
-        self::assertStringEndsNotWith(
-            PHP_EOL . PHP_EOL,
-            $out->stderrBuffer,
-            "The 'resolves outside vendor dir' warning must end with exactly one PHP_EOL.",
-        );
-        self::assertStringStartsNotWith(
-            PHP_EOL,
-            $out->stderrBuffer,
-            "The 'resolves outside vendor dir' warning must not start with PHP_EOL.",
+            ConsoleMessage::SCAFFOLD_PROVIDER_ROOT_OUTSIDE_VENDOR->getMessage('p/a') . PHP_EOL,
+            'Escaping provider path must be warned about once.',
         );
     }
 
-    public function testEnsureDirectoryFailureIsReportedAsError(): void
-    {
-        $this->seedTracked('deep/config/params.php', "stub\n", "current\n", lockHashOf: "stub\n");
-
-        MockerState::addCondition(
-            'PHPForge\\Scaffold\\Scaffold',
-            'mkdir',
-            [],
-            false,
-            default: true,
-        );
-        MockerState::addCondition(
-            'PHPForge\\Scaffold\\Scaffold',
-            'is_dir',
-            [],
-            false,
-            default: true,
-        );
-        $out = new BufferedOutputWriter();
-        (new ReapplyService())->run(
-            $this->tempDir,
-            "{$this->tempDir}/vendor",
-            file: 'deep/config/params.php',
-            provider: '',
-            force: true,
-            out: $out,
-        );
-
-        self::assertStringContainsString(
-            'Could not create directory',
-            $out->stderrBuffer,
-            'When directory creation fails, an error must be reported.',
-        );
-    }
-
-    public function testEnsureDirectoryFailureSkipContinuesIterationToNextReapplicableEntry(): void
-    {
-        // Entry 1 is deep-nested with its parent removed so the mocked 'mkdir' is reached; entry 2 must still be reapplied.
-        $this->seedTracked('deep/config/params.php', "stub\n", "stub\n");
-        $this->seedTracked('top.txt', "stub\n", "stub\n");
-
-        $deepDestination = PathResolver::destination($this->tempDir, 'deep/config/params.php');
-
-        unlink($deepDestination);
-        rmdir(dirname($deepDestination));
-
-        MockerState::addCondition(
-            'PHPForge\\Scaffold\\Scaffold',
-            'mkdir',
-            [],
-            false,
-            default: true,
-        );
-
-        $out = new BufferedOutputWriter();
-        (new ReapplyService())->run(
-            $this->tempDir,
-            "{$this->tempDir}/vendor",
-            file: '',
-            provider: '',
-            force: true,
-            out: $out,
-        );
-
-        self::assertStringContainsString(
-            'Could not create directory',
-            $out->stderrBuffer,
-            "The 'ensureDirectory' failure diagnostic must be emitted for the deep entry.",
-        );
-        self::assertStringContainsString(
-            'Reapplied "top.txt"',
-            $out->stdoutBuffer,
-            "After the 'ensureDirectory' skip, the foreach must continue to the next entry.",
-        );
-    }
-
-    public function testFileFilterSkipsNonMatchingEntriesWhileProcessingTheTarget(): void
-    {
-        $this->seedTracked('a.txt', "a\n", "a\n", provider: 'pkg/a');
-        $this->seedTracked('b.txt', "b\n", "b\n", provider: 'pkg/a');
-
-        $out = new BufferedOutputWriter();
-        (new ReapplyService())->run(
-            $this->tempDir,
-            "{$this->tempDir}/vendor",
-            file: 'b.txt',
-            provider: '',
-            force: true,
-            out: $out,
-        );
-
-        self::assertStringContainsString(
-            'Reapplied "b.txt"',
-            $out->stdoutBuffer,
-            'When a specific file filter is supplied, only matching lock entries must be reapplied.',
-        );
-        self::assertStringNotContainsString(
-            'Reapplied "a.txt"',
-            $out->stdoutBuffer,
-            'When a specific file filter is supplied, non-matching lock entries must be skipped.',
-        );
-    }
-
-    public function testForceOverwritesUserModifiedFileAndUpdatesLockHash(): void
-    {
-        $this->seedTracked('config/params.php', "stub\n", "user-edited\n", lockHashOf: "stub\n");
-
-        $out = new BufferedOutputWriter();
-        (new ReapplyService())->run(
-            $this->tempDir,
-            "{$this->tempDir}/vendor",
-            file: 'config/params.php',
-            provider: '',
-            force: true,
-            out: $out,
-        );
-
-        self::assertStringContainsString(
-            'Reapplied',
-            $out->stdoutBuffer,
-            "When 'force=true', the stub content must overwrite the user's content.",
-        );
-        self::assertSame(
-            "stub\n",
-            (string) file_get_contents($this->tempDir . '/config/params.php'),
-            "With 'force=true' the stub content must overwrite the user's content.",
-        );
-
-        $data = (new LockFile($this->tempDir))->read();
-
-        $entry = $data['files']['config/params.php'] ?? null;
-
-        self::assertNotNull(
-            $entry,
-            "The entry for 'config/params.php' must survive the reapply.",
-        );
-        self::assertSame(
-            'sha256:' . hash('sha256', "stub\n"),
-            $entry['hash'],
-            'Lock hash must be updated to reflect the newly written content.',
-        );
-    }
-
-    public function testHashFailureBeforeWriteIsReported(): void
-    {
-        $this->seedTracked('config/params.php', "stub\n", "user-edited\n", lockHashOf: "stub\n");
-
-        MockerState::addCondition(
-            'PHPForge\\Scaffold\\Scaffold\\Lock',
-            'hash_file',
-            [],
-            false,
-            default: true,
-        );
-        $out = new BufferedOutputWriter();
-        (new ReapplyService())->run(
-            $this->tempDir,
-            "{$this->tempDir}/vendor",
-            file: 'config/params.php',
-            provider: '',
-            force: false,
-            out: $out,
-        );
-
-        self::assertStringContainsString(
-            'Could not hash',
-            $out->stderrBuffer,
-            'When hashing fails before writing, an error must be reported.',
-        );
-    }
-
-    public function testHashFailureSkipContinuesIterationToNextReapplicableEntry(): void
-    {
-        // Mock 'hash_file' to fail only on 'first.txt' so the continue-branch fires; 'second.txt' must still be reapplied.
-        $this->seedTracked('first.txt', "stub\n", "stub\n");
-        $this->seedTracked('second.txt', "stub\n", "stub\n");
-
-        // Target the first destination exclusively so the mock does not leak into the second iteration's hash calls.
-        MockerState::addCondition(
-            'PHPForge\\Scaffold\\Scaffold\\Lock',
-            'hash_file',
-            ['sha256', PathResolver::destination($this->tempDir, 'first.txt'), false, []],
-            false,
-        );
-
-        $out = new BufferedOutputWriter();
-        (new ReapplyService())->run(
-            $this->tempDir,
-            "{$this->tempDir}/vendor",
-            file: '',
-            provider: '',
-            force: false,
-            out: $out,
-        );
-
-        self::assertStringContainsString(
-            'Could not hash "first.txt"',
-            $out->stderrBuffer,
-            "The hash-failure diagnostic must be emitted for 'first.txt'.",
-        );
-        self::assertStringContainsString(
-            'Reapplied "second.txt"',
-            $out->stdoutBuffer,
-            "After the 'Could not hash' skip, the foreach must 'continue' so 'second.txt' is still reapplied.",
-        );
-    }
-
-    public function testMissingStubIsReportedAsError(): void
-    {
-        $this->seedTracked('config/params.php', "stub\n", "stub\n");
-
-        unlink("{$this->tempDir}/vendor/pkg/name/stubs/config/params.php");
-
-        $out = new BufferedOutputWriter();
-        (new ReapplyService())->run(
-            $this->tempDir,
-            "{$this->tempDir}/vendor",
-            file: 'config/params.php',
-            provider: '',
-            force: true,
-            out: $out,
-        );
-
-        self::assertStringContainsString(
-            'Stub not found',
-            $out->stderrBuffer,
-            'When the stub is missing, an error must be reported.',
-        );
-    }
-
-    public function testMissingStubSkipContinuesIterationToNextReapplicableEntry(): void
-    {
-        $this->seedTracked('first.txt', "stub\n", "stub\n");
-        unlink("{$this->tempDir}/vendor/pkg/name/stubs/first.txt");
-
-        $this->seedTracked('second.txt', "stub\n", "stub\n");
-
-        $out = new BufferedOutputWriter();
-        (new ReapplyService())->run(
-            $this->tempDir,
-            "{$this->tempDir}/vendor",
-            file: '',
-            provider: '',
-            force: true,
-            out: $out,
-        );
-
-        self::assertStringContainsString(
-            'Stub not found',
-            $out->stderrBuffer,
-            'The missing stub must be reported as an error.',
-        );
-        self::assertStringContainsString(
-            'Reapplied "second.txt"',
-            $out->stdoutBuffer,
-            "After 'Stub not found' the foreach must 'continue' so 'second.txt' can still be reapplied.",
-        );
-    }
-
-    public function testNoMatchErrorEndsWithSinglePhpEolSuffix(): void
-    {
-        (new LockFile($this->tempDir))->write(['providers' => [], 'files' => []]);
-
-        $out = new BufferedOutputWriter();
-        (new ReapplyService())->run(
-            $this->tempDir,
-            "{$this->tempDir}/vendor",
-            file: 'missing.php',
-            provider: '',
-            force: false,
-            out: $out,
-        );
-
-        self::assertStringEndsWith(
-            PHP_EOL,
-            $out->stderrBuffer,
-            "The 'No tracked files matched' error must end with PHP_EOL.",
-        );
-        self::assertStringEndsNotWith(
-            PHP_EOL . PHP_EOL,
-            $out->stderrBuffer,
-            "The 'No tracked files matched' error must end with exactly one PHP_EOL.",
-        );
-        self::assertStringStartsNotWith(
-            PHP_EOL,
-            $out->stderrBuffer,
-            "The 'No tracked files matched' error must not be prefixed with PHP_EOL.",
-        );
-    }
-
-    public function testPostWriteHashFailureSkipContinuesIterationToNextReapplicableEntry(): void
-    {
-        // 'hash_file' fails for both entries so each reapply emits its own diagnostic, proving the loop keeps iterating.
-        $this->seedTracked('first.txt', "new-stub\n", "user-edited\n", lockHashOf: "user-edited\n");
-        $this->seedTracked('second.txt', "new-stub\n", "user-edited\n", lockHashOf: "user-edited\n");
-
-        MockerState::addCondition(
-            'PHPForge\\Scaffold\\Scaffold\\Lock',
-            'hash_file',
-            [],
-            false,
-            default: true,
-        );
-
-        $out = new BufferedOutputWriter();
-        (new ReapplyService())->run(
-            $this->tempDir,
-            "{$this->tempDir}/vendor",
-            file: '',
-            provider: '',
-            force: true,
-            out: $out,
-        );
-
-        self::assertStringContainsString(
-            'first.txt',
-            $out->stderrBuffer,
-            "The first entry must emit its own 'Could not hash written file' diagnostic naming 'first.txt'.",
-        );
-        self::assertStringContainsString(
-            'second.txt',
-            $out->stderrBuffer,
-            "After the first post-write hash failure, the foreach must 'continue' so 'second.txt' emits its own diagnostic.",
-        );
-    }
-
-    public function testPostWriteHashFailureSkipsLockUpdate(): void
-    {
-        // Divergent stub vs current content so the success path would update the hash; the failure path must leave it.
-        $this->seedTracked(
-            'config/params.php',
-            stubContent: "new-stub\n",
-            currentContent: "user-edited\n",
-            lockHashOf: "user-edited\n",
-        );
-
-        $originalLockHash = 'sha256:' . hash('sha256', "user-edited\n");
-
-        self::assertSame(
-            $originalLockHash,
-            (new LockFile($this->tempDir))->read()['files']['config/params.php']['hash'] ?? null,
-            'Pre-condition: lock hash must reflect the seeded current-content hash before the reapply runs.',
-        );
-
-        MockerState::addCondition(
-            'PHPForge\\Scaffold\\Scaffold\\Lock',
-            'hash_file',
-            [],
-            false,
-            default: true,
-        );
-        $out = new BufferedOutputWriter();
-        (new ReapplyService())->run(
-            $this->tempDir,
-            "{$this->tempDir}/vendor",
-            file: 'config/params.php',
-            provider: '',
-            force: true,
-            out: $out,
-        );
-
-        self::assertStringContainsString(
-            'Could not hash',
-            $out->stderrBuffer,
-            "Post-write 'hash_file' failure must surface via the 'Could not hash' diagnostic on stderr.",
-        );
-        self::assertSame(
-            $originalLockHash,
-            (new LockFile($this->tempDir))->read()['files']['config/params.php']['hash'] ?? null,
-            'When the post-write hash throws, the lock entry must stay frozen at the pre-run hash.',
-        );
-    }
-
-    public function testPreserveModeIsSkippedWithoutForce(): void
-    {
-        $this->seedTracked('config/web.php', "stub\n", "current\n", mode: 'preserve', lockHashOf: "stub\n");
-
-        $out = new BufferedOutputWriter();
-        (new ReapplyService())->run(
-            $this->tempDir,
-            "{$this->tempDir}/vendor",
-            file: 'config/web.php',
-            provider: '',
-            force: false,
-            out: $out,
-        );
-
-        self::assertStringContainsString(
-            'mode "preserve"',
-            $out->stdoutBuffer,
-            'When preserve mode is active, a message must be displayed.',
-        );
-        self::assertSame(
-            "current\n",
-            (string) file_get_contents($this->tempDir . '/config/web.php'),
-            'Preserve mode must leave the on-disk content untouched without force.',
-        );
-    }
-
-    public function testPreserveModeRewritesWhenDestinationIsMissing(): void
-    {
-        $this->seedTracked('config/web.php', "stub\n", "stub\n", mode: 'preserve');
-
-        unlink($this->tempDir . '/config/web.php');
-
-        $out = new BufferedOutputWriter();
-        (new ReapplyService())->run(
-            $this->tempDir,
-            "{$this->tempDir}/vendor",
-            file: 'config/web.php',
-            provider: '',
-            force: false,
-            out: $out,
-        );
-
-        self::assertFileExists(
-            "{$this->tempDir}/config/web.php",
-            'Preserve mode must rewrite when the destination is missing, even without force.',
-        );
-        self::assertSame(
-            "stub\n",
-            (string) file_get_contents("{$this->tempDir}/config/web.php"),
-            'Preserve mode must restore the exact stub content (not an empty file) when the destination is missing.',
-        );
-    }
-
-    public function testPreserveModeSkipNoticeEndsWithSinglePhpEolSuffix(): void
-    {
-        $this->seedTracked('config/web.php', "stub\n", "current\n", mode: 'preserve', lockHashOf: "stub\n");
-
-        $out = new BufferedOutputWriter();
-        (new ReapplyService())->run(
-            $this->tempDir,
-            "{$this->tempDir}/vendor",
-            file: 'config/web.php',
-            provider: '',
-            force: false,
-            out: $out,
-        );
-
-        self::assertStringEndsWith(
-            PHP_EOL,
-            $out->stdoutBuffer,
-            "The 'preserve' skip notice must end with PHP_EOL.",
-        );
-        self::assertStringEndsNotWith(
-            PHP_EOL . PHP_EOL,
-            $out->stdoutBuffer,
-            "The 'preserve' skip notice must end with exactly one PHP_EOL.",
-        );
-        self::assertStringStartsNotWith(
-            PHP_EOL,
-            $out->stdoutBuffer,
-            "The 'preserve' skip notice must not be prefixed with PHP_EOL.",
-        );
-    }
-
-    public function testPreserveSkipContinuesIterationToNextReapplicableEntry(): void
-    {
-        // Entry 1 (preserve) triggers the skip-continue; entry 2 (replace) must still be reapplied.
-        $this->seedTracked('config/web.php', "stub\n", "current\n", mode: 'preserve', lockHashOf: "stub\n");
-        $this->seedTracked('config/params.php', "stub\n", "stub\n", mode: 'replace');
-
-        $out = new BufferedOutputWriter();
-        (new ReapplyService())->run(
-            $this->tempDir,
-            "{$this->tempDir}/vendor",
-            file: '',
-            provider: '',
-            force: false,
-            out: $out,
-        );
-
-        self::assertStringContainsString(
-            'uses mode "preserve"',
-            $out->stdoutBuffer,
-            'The preserve-mode entry must produce the skip diagnostic.',
-        );
-        self::assertStringContainsString(
-            'Reapplied "config/params.php"',
-            $out->stdoutBuffer,
-            "After the preserve skip, the foreach must 'continue' so the next replace-mode entry is reapplied.",
-        );
-    }
-
-    public function testProviderFilterOnlyProcessesMatchingEntries(): void
-    {
-        $this->seedTracked('a.txt', "a\n", "a\n", provider: 'pkg/a');
-        $this->seedTracked('b.txt', "b\n", "b\n", provider: 'pkg/b');
-
-        $out = new BufferedOutputWriter();
-        (new ReapplyService())->run(
-            $this->tempDir,
-            "{$this->tempDir}/vendor",
-            file: '',
-            provider: 'pkg/a',
-            force: true,
-            out: $out,
-        );
-
-        self::assertStringContainsString(
-            'Reapplied "a.txt"',
-            $out->stdoutBuffer,
-            'Only the matching provider entries must be processed.',
-        );
-        self::assertStringNotContainsString(
-            'Reapplied "b.txt"',
-            $out->stdoutBuffer,
-            'Non-matching provider entries must be skipped.',
-        );
-    }
-
-    public function testProviderFilterSkipOnFirstEntryContinuesIterationToNextMatchingEntry(): void
-    {
-        // Non-matching entry first so the provider-filter guard 'continues'; the matching entry must still be processed.
-        $this->seedTracked('non-match.txt', "x\n", "x\n", provider: 'pkg/other');
-        $this->seedTracked('match.txt', "y\n", "y\n", provider: 'pkg/target');
-
-        $out = new BufferedOutputWriter();
-        (new ReapplyService())->run(
-            $this->tempDir,
-            "{$this->tempDir}/vendor",
-            file: '',
-            provider: 'pkg/target',
-            force: true,
-            out: $out,
-        );
-
-        self::assertStringContainsString(
-            'Reapplied "match.txt"',
-            $out->stdoutBuffer,
-            "After the provider-filter guard rejects an entry, the foreach must 'continue' so 'match.txt' is processed.",
-        );
-    }
-
-    public function testReappliedMessageEndsWithSinglePhpEolSuffix(): void
-    {
-        $this->seedTracked('config/params.php', "stub\n", "stub\n");
-
-        $out = new BufferedOutputWriter();
-        (new ReapplyService())->run(
-            $this->tempDir,
-            "{$this->tempDir}/vendor",
-            file: 'config/params.php',
-            provider: '',
-            force: true,
-            out: $out,
-        );
-
-        self::assertStringEndsWith(
-            PHP_EOL,
-            $out->stdoutBuffer,
-            "The 'Reapplied' confirmation must end with PHP_EOL.",
-        );
-        self::assertStringEndsNotWith(
-            PHP_EOL . PHP_EOL,
-            $out->stdoutBuffer,
-            "The 'Reapplied' confirmation must end with exactly one PHP_EOL.",
-        );
-        self::assertStringStartsNotWith(
-            PHP_EOL,
-            $out->stdoutBuffer,
-            "The 'Reapplied' confirmation must not be prefixed with PHP_EOL.",
-        );
-    }
-
-    public function testReapplySyncsSourceExecutableBitOntoDestination(): void
+    public function reapplySyncsTheExecutableBitOfTheStub(): void
     {
         if (DIRECTORY_SEPARATOR === '\\') {
-            self::markTestSkipped('POSIX umask-based permissions do not apply to NTFS (Windows always reports 0777).');
+            throw new SkipTest('POSIX permissions do not apply to NTFS, where Windows always reports 0777.');
         }
 
-        $this->seedTracked('yii', "#!/usr/bin/env php\n", "#!/usr/bin/env php\n");
+        $project = (new InspectionProject($this->tempDir))
+            ->composer(['p/a'])
+            ->provider('p/a', ['yii' => "#!/usr/bin/env php\n"])
+            ->file('yii', "#!/usr/bin/env php\n")
+            ->track('yii', 'p/a');
 
-        $stubPath = "{$this->tempDir}/vendor/pkg/name/stubs/yii";
-
-        chmod($stubPath, 0o755);
-
-        $destination = "{$this->tempDir}/yii";
-
-        chmod($destination, 0o644);
+        chmod("{$this->tempDir}/vendor/p/a/stubs/yii", 0o755);
+        chmod("{$this->tempDir}/yii", 0o644);
 
         $oldUmask = umask(0o022);
 
         try {
-            $out = new BufferedOutputWriter();
-            (new ReapplyService())->run(
-                $this->tempDir,
-                "{$this->tempDir}/vendor",
-                file: 'yii',
-                provider: '',
-                force: true,
-                out: $out,
-            );
-
-            self::assertSame(
-                0o755,
-                fileperms($destination) & 0o777,
-                "After 'ReapplyService' rewrites the stub, 'syncPermissions' must propagate the source exec bit (0755).",
-            );
+            $this->reapply($project, new BufferedOutputWriter(), 'yii', force: true);
         } finally {
             umask($oldUmask);
         }
-    }
 
-    public function testRejectsLockEntryWithUnsafeDestination(): void
-    {
-        (new LockFile($this->tempDir))->write(
-            [
-                'providers' => [
-                    'pkg/name' => [
-                        'version' => '0.1.x-dev',
-                        'path' => 'vendor/pkg/name',
-                    ],
-                ],
-                'files' => [
-                    '../escape.php' => [
-                        'hash' => 'sha256:abc',
-                        'provider' => 'pkg/name',
-                        'source' => 'stubs/escape.php',
-                        'mode' => 'replace',
-                    ],
-                ],
-            ],
-        );
-
-        $out = new BufferedOutputWriter();
-        (new ReapplyService())->run(
-            $this->tempDir,
-            "{$this->tempDir}/vendor",
-            file: '',
-            provider: '',
-            force: true,
-            out: $out,
-        );
-
-        self::assertStringContainsString(
-            'Unsafe lock entry',
-            $out->stderrBuffer,
-            'Unsafe lock entries must be reported as errors.',
+        Assert::same(
+            fileperms("{$this->tempDir}/yii") & 0o777,
+            0o755,
+            "Destination must get the stub mode '0755'.",
         );
     }
 
-    public function testRejectsLockEntryWithUnsafeSourceEvenWhenDestinationIsSafe(): void
+    #[DataSet(['append'], 'append')]
+    #[DataSet(['prepend'], 'prepend')]
+    public function satisfiedMergeFileIsUpToDate(string $mode): void
     {
-        // Safe destination + unsafe source isolates the 'validateSource' guard inside the try block.
-        $providerRoot = "{$this->tempDir}/vendor/pkg/name";
+        $file = ".env.{$mode}.dist";
 
-        $this->ensureTestDirectory($providerRoot);
-
-        (new LockFile($this->tempDir))->write(
-            [
-                'providers' => [
-                    'pkg/name' => [
-                        'version' => '0.1.x-dev',
-                        'path' => 'vendor/pkg/name',
-                    ],
-                ],
-                'files' => [
-                    'config/params.php' => [
-                        'hash' => 'sha256:abc',
-                        'provider' => 'pkg/name',
-                        'source' => '../escape.php',
-                        'mode' => 'replace',
-                    ],
-                ],
-            ],
-        );
+        $project = (new InspectionProject($this->tempDir))
+            ->composer(['p/a'])
+            ->provider('p/a', [$file => "A=1\n"], [$file => $mode])
+            ->file($file, "A=1\n")
+            ->track($file, 'p/a', $mode);
 
         $out = new BufferedOutputWriter();
-        (new ReapplyService())->run(
-            $this->tempDir,
-            "{$this->tempDir}/vendor",
-            file: '',
-            provider: '',
-            force: true,
-            out: $out,
-        );
 
-        self::assertStringContainsString(
-            'Unsafe lock entry',
-            $out->stderrBuffer,
-            "'validateSource' must catch the traversal source and emit the 'Unsafe lock entry' diagnostic.",
+        $this->reapply($project, $out, $file);
+
+        Assert::same(
+            $out->stdoutBuffer,
+            ConsoleMessage::REAPPLY_ALREADY_UP_TO_DATE->getMessage($file) . PHP_EOL
+            . ExpectedSummary::reapply(0, 1, 0, 0) . PHP_EOL,
+            'Satisfied file must be reported as up to date.',
+        );
+        FileAssert::contentSame(
+            "{$this->tempDir}/{$file}",
+            "A=1\n",
+            'File must be untouched.',
         );
     }
 
-    public function testReturnsErrorWhenBothFileAndProviderFiltersAreSetButNothingMatches(): void
+    public function stubReadFailureContinuesToTheNextEntry(): void
     {
-        (new LockFile($this->tempDir))->write(['providers' => [], 'files' => []]);
+        $project = (new InspectionProject($this->tempDir))
+            ->composer(['p/a'])
+            ->provider('p/a', ['first.txt' => "stub\n", 'second.txt' => "stub\n"])
+            ->file('first.txt', "stub\n")
+            ->file('second.txt', "stub\n")
+            ->track('first.txt', 'p/a')
+            ->track('second.txt', 'p/a');
+
+        $stub = "{$this->tempDir}/vendor/p/a/stubs/first.txt";
+
+        $this->restrictFileAccess($stub, 0o000);
 
         $out = new BufferedOutputWriter();
-        $exitCode = (new ReapplyService())->run(
-            $this->tempDir,
-            "{$this->tempDir}/vendor",
-            file: 'missing.php',
-            provider: 'pkg/missing',
-            force: false,
-            out: $out,
-        );
 
-        self::assertSame(
+        Assert::same(
+            $this->reapply($project, $out, force: true),
             1,
-            $exitCode,
-            'When both filters are set and nothing matches, the service must emit an error exit code.',
+            "Exit code must be '1' when a stub cannot be read.",
         );
-        self::assertStringContainsString(
-            'No tracked files matched',
+        Assert::same(
             $out->stderrBuffer,
-            'The no-match diagnostic must be emitted when both filters are present and the lock is empty.',
+            ConsoleMessage::REAPPLY_FAILED->getMessage(
+                'first.txt',
+                Message::FILESYSTEM_FAILED->getMessage(
+                    Message::MODE_COPY_FAILED->getMessage(
+                        $stub,
+                        PathResolver::destination($this->tempDir, 'first.txt'),
+                    ),
+                    "copy({$stub}): Failed to open stream: Permission denied",
+                ),
+            ) . PHP_EOL,
+            'Stub read failure must be reported with its reason.',
+        );
+        Assert::same(
+            $out->stdoutBuffer,
+            ConsoleMessage::REAPPLY_APPLIED->getMessage('second.txt') . PHP_EOL
+            . ExpectedSummary::reapply(1, 0, 0, 1) . PHP_EOL,
+            "'second.txt' must still be reapplied.",
         );
     }
 
-    public function testReturnsErrorWhenFilterMatchesNothing(): void
+    public function throwRuntimeExceptionWhenLockContainsGitConflictMarkers(): void
     {
-        (new LockFile($this->tempDir))->write(['providers' => [], 'files' => []]);
+        $project = (new InspectionProject($this->tempDir))->composer(['p/a']);
 
-        $out = new BufferedOutputWriter();
-        $exitCode = (new ReapplyService())->run(
-            $this->tempDir,
-            "{$this->tempDir}/vendor",
-            file: 'missing.php',
-            provider: '',
-            force: false,
-            out: $out,
+        file_put_contents(
+            "{$this->tempDir}/scaffold-lock.json",
+            "{\n<<<<<<< HEAD\n    \"files\": {}\n=======\n    \"files\": {\"a\": {}}\n>>>>>>> main\n}\n",
         );
 
-        self::assertSame(
+        Expect::exception(RuntimeException::class)->withMessage(
+            Message::LOCK_CONFLICT_MARKERS->getMessage((new LockFile($this->tempDir))->getPath(), 'Syntax error'),
+        );
+
+        $this->reapply($project, new BufferedOutputWriter(), force: true);
+    }
+
+    public function unknownLockModeIsAnError(): void
+    {
+        $project = (new InspectionProject($this->tempDir))
+            ->composer(['p/a'])
+            ->provider('p/a', ['a.txt' => "stub\n"])
+            ->file('a.txt', "stub\n")
+            ->track('a.txt', 'p/a', 'copy');
+
+        $out = new BufferedOutputWriter();
+
+        Assert::same(
+            $this->reapply($project, $out),
             1,
-            $exitCode,
-            'When no tracked files match the filter, the service must return a non-zero exit code.',
+            "Exit code must be '1' for an unknown mode.",
         );
-        self::assertStringContainsString(
-            'No tracked files matched',
+        Assert::same(
             $out->stderrBuffer,
-            'An error must be reported when no files match the filter.',
+            ConsoleMessage::REAPPLY_FAILED->getMessage('a.txt', Message::LOCK_MODE_UNKNOWN->getMessage('copy')) . PHP_EOL,
+            'Unknown mode must be reported.',
         );
-    }
-
-    public function testReturnsOkWhenNoFiltersAndLockIsEmpty(): void
-    {
-        (new LockFile($this->tempDir))->write(['providers' => [], 'files' => []]);
-
-        $out = new BufferedOutputWriter();
-        $exitCode = (new ReapplyService())->run(
-            $this->tempDir,
-            "{$this->tempDir}/vendor",
-            file: '',
-            provider: '',
-            force: false,
-            out: $out,
-        );
-
-        self::assertSame(
-            0,
-            $exitCode,
-            "When no filter is supplied, running against an empty lock must be a silent no-op (no 'no match' error).",
-        );
-        self::assertStringNotContainsString(
-            'No tracked files matched',
-            $out->stderrBuffer,
-            "Without any filter, the no-match diagnostic must stay silent for users running 'reapply' on a fresh project.",
-        );
-    }
-
-    public function testSkipsUserModifiedFileWithoutForce(): void
-    {
-        $this->seedTracked('config/params.php', "stub\n", "user-edited\n", lockHashOf: "stub\n");
-
-        $out = new BufferedOutputWriter();
-        (new ReapplyService())->run(
-            $this->tempDir,
-            "{$this->tempDir}/vendor",
-            file: 'config/params.php',
-            provider: '',
-            force: false,
-            out: $out,
-        );
-
-        self::assertStringContainsString(
-            'user-modified',
+        Assert::same(
             $out->stdoutBuffer,
-            'When a file is user-modified and force is false, a message must be displayed.',
-        );
-        self::assertSame(
-            "user-edited\n",
-            (string) file_get_contents($this->tempDir . '/config/params.php'),
-            'Without force the on-disk file must be preserved.',
+            ExpectedSummary::reapply(0, 0, 0, 1) . PHP_EOL,
+            'Summary must count the error.',
         );
     }
 
-    public function testStubNotFoundErrorEndsWithSinglePhpEolSuffix(): void
+    #[DataProvider(ReapplyServiceProvider::class . '::unmatchedFilters')]
+    public function unmatchedFilterIsAnError(string $file, string $provider): void
     {
-        $this->seedTracked('config/params.php', "stub\n", "stub\n");
+        $project = (new InspectionProject($this->tempDir))->composer(['p/a']);
 
-        unlink("{$this->tempDir}/vendor/pkg/name/stubs/config/params.php");
+        $project->lock()->write(['providers' => [], 'files' => []]);
 
         $out = new BufferedOutputWriter();
-        (new ReapplyService())->run(
-            $this->tempDir,
-            "{$this->tempDir}/vendor",
-            file: 'config/params.php',
-            provider: '',
-            force: true,
-            out: $out,
-        );
 
-        self::assertStringEndsWith(
-            PHP_EOL,
+        Assert::same(
+            $this->reapply($project, $out, $file, $provider),
+            1,
+            "Exit code must be '1' when no tracked file matches.",
+        );
+        Assert::same(
             $out->stderrBuffer,
-            "The 'Stub not found' error must end with PHP_EOL.",
+            ConsoleMessage::REAPPLY_NO_MATCH->getMessage() . PHP_EOL,
+            'No-match error must be the only stderr line.',
         );
-        self::assertStringEndsNotWith(
-            PHP_EOL . PHP_EOL,
-            $out->stderrBuffer,
-            "The 'Stub not found' error must end with exactly one PHP_EOL.",
-        );
-        self::assertStringStartsNotWith(
-            PHP_EOL,
-            $out->stderrBuffer,
-            "The 'Stub not found' error must not be prefixed with PHP_EOL.",
-        );
-    }
-
-    public function testStubReadFailureIsReportedAsError(): void
-    {
-        $this->seedTracked('config/params.php', "stub\n", "stub\n");
-
-        MockerState::addCondition(
-            'PHPForge\\Scaffold\\Services',
-            'file_get_contents',
-            [],
-            false,
-            default: true,
-        );
-        $out = new BufferedOutputWriter();
-        (new ReapplyService())->run(
-            $this->tempDir,
-            "{$this->tempDir}/vendor",
-            file: 'config/params.php',
-            provider: '',
-            force: true,
-            out: $out,
-        );
-
-        self::assertStringContainsString(
-            'Could not read stub',
-            $out->stderrBuffer,
-            'An error must be reported when a stub cannot be read.',
-        );
-    }
-
-    public function testStubReadFailureSkipContinuesIterationToNextReapplicableEntry(): void
-    {
-        // Two entries with 'file_get_contents' mocked to fail; both must emit their own diagnostic, proving loop iteration.
-        $this->seedTracked('first.txt', "stub\n", "stub\n");
-        $this->seedTracked('second.txt', "stub\n", "stub\n");
-
-        MockerState::addCondition(
-            'PHPForge\\Scaffold\\Services',
-            'file_get_contents',
-            [],
-            false,
-            default: true,
-        );
-
-        $out = new BufferedOutputWriter();
-        (new ReapplyService())->run(
-            $this->tempDir,
-            "{$this->tempDir}/vendor",
-            file: '',
-            provider: '',
-            force: true,
-            out: $out,
-        );
-
-        self::assertStringContainsString(
-            'first.txt',
-            $out->stderrBuffer,
-            "The first entry must emit its own 'Could not read stub' diagnostic naming 'first.txt'.",
-        );
-        self::assertStringContainsString(
-            'second.txt',
-            $out->stderrBuffer,
-            "After the first stub-read failure, the foreach must 'continue' so 'second.txt' emits its own diagnostic.",
-        );
-    }
-
-    public function testSuccessfulReapplyUpdatesLockHashAndPreservesProvidersKey(): void
-    {
-        // Divergent stub vs current content so a force-reapply must flip the lock hash to 'sha256(stub)'.
-        $this->seedTracked(
-            'config/params.php',
-            stubContent: "new-stub\n",
-            currentContent: "user-edited\n",
-            lockHashOf: "user-edited\n",
-        );
-
-        $originalHash = 'sha256:' . hash('sha256', "user-edited\n");
-        $expectedHash = 'sha256:' . hash('sha256', "new-stub\n");
-
-        self::assertSame(
-            $originalHash,
-            (new LockFile($this->tempDir))->read()['files']['config/params.php']['hash'] ?? null,
-            'Pre-condition: lock hash must match the seeded current-content hash before the reapply runs.',
-        );
-
-        $out = new BufferedOutputWriter();
-        (new ReapplyService())->run(
-            $this->tempDir,
-            "{$this->tempDir}/vendor",
-            file: 'config/params.php',
-            provider: '',
-            force: true,
-            out: $out,
-        );
-
-        $data = (new LockFile($this->tempDir))->read();
-
-        self::assertArrayHasKey(
-            'config/params.php',
-            $data['files'],
-            "The reapplied destination must remain tracked in 'files' after the lock rewrite.",
-        );
-        self::assertSame(
-            $expectedHash,
-            $data['files']['config/params.php']['hash'],
-            'After a successful reapply the lock hash must reflect the newly written stub contents.',
-        );
-        self::assertArrayHasKey(
-            'pkg/name',
-            $data['providers'],
-            "The 'providers' key must survive the lock rewrite; top-level provider metadata is required downstream.",
-        );
-
-        $providerEntry = $data['providers']['pkg/name'] ?? null;
-
-        self::assertIsArray(
-            $providerEntry,
-            "The 'pkg/name' provider entry must be a structured array carrying 'version' and 'path' fields.",
-        );
-        self::assertSame(
-            'vendor/pkg/name',
-            $providerEntry['path'] ?? null,
-            'The preserved provider entry must retain its recorded install path.',
-        );
-    }
-
-    public function testUnsafeLockEntrySkipContinuesIterationToNextFile(): void
-    {
-        // First entry has an unsafe destination that triggers skip-continue; the second must still be reapplied.
-        $unsafeDestination = '../escape.php';
-        $validDestination = 'config/params.php';
-
-        $providerRoot = "{$this->tempDir}/vendor/pkg/name";
-
-        $this->ensureTestDirectory("{$providerRoot}/stubs/config");
-
-        file_put_contents("{$providerRoot}/stubs/config/params.php", "stub\n");
-
-        $this->ensureTestDirectory("{$this->tempDir}/config");
-
-        file_put_contents("{$this->tempDir}/config/params.php", "stub\n");
-
-        (new LockFile($this->tempDir))->write(
-            [
-                'providers' => [
-                    'pkg/name' => [
-                        'version' => '0.1.x-dev',
-                        'path' => 'vendor/pkg/name',
-                    ],
-                ],
-                'files' => [
-                    $unsafeDestination => [
-                        'hash' => 'sha256:abc',
-                        'provider' => 'pkg/name',
-                        'source' => 'stubs/escape.php',
-                        'mode' => 'replace',
-                    ],
-                    $validDestination => [
-                        'hash' => 'sha256:' . hash('sha256', "stub\n"),
-                        'provider' => 'pkg/name',
-                        'source' => 'stubs/config/params.php',
-                        'mode' => 'replace',
-                    ],
-                ],
-            ],
-        );
-
-        $out = new BufferedOutputWriter();
-        (new ReapplyService())->run(
-            $this->tempDir,
-            "{$this->tempDir}/vendor",
-            file: '',
-            provider: '',
-            force: true,
-            out: $out,
-        );
-
-        self::assertStringContainsString(
-            'Unsafe lock entry',
-            $out->stderrBuffer,
-            'The unsafe entry must be surfaced via stderr as an error.',
-        );
-        self::assertStringContainsString(
-            'Reapplied "config/params.php"',
+        Assert::same(
             $out->stdoutBuffer,
-            'After the unsafe entry triggers the skip branch, the foreach must keep iterating to reapply the valid entry.',
+            '',
+            'No summary may be printed.',
         );
     }
 
-    public function testUserModifiedSkipContinuesIterationToNextReapplicableEntry(): void
-    {
-        // Entry 1 (user-modified) triggers skip-continue; entry 2 (in-sync replace) must still be reapplied.
-        $this->seedTracked('config/params.php', "stub\n", "user-edited\n", lockHashOf: "stub\n");
-        $this->seedTracked('config/web.php', "stub\n", "stub\n");
-
-        $out = new BufferedOutputWriter();
-        (new ReapplyService())->run(
-            $this->tempDir,
-            "{$this->tempDir}/vendor",
-            file: '',
-            provider: '',
-            force: false,
-            out: $out,
-        );
-
-        self::assertStringContainsString(
-            'user-modified',
-            $out->stdoutBuffer,
-            'The user-modified entry must produce the skip diagnostic.',
-        );
-        self::assertStringContainsString(
-            'Reapplied "config/web.php"',
-            $out->stdoutBuffer,
-            "After 'is user-modified' the foreach must 'continue' so the next in-sync entry is reapplied.",
-        );
-    }
-
-    public function testWriteFailureIsReportedAsError(): void
-    {
-        $this->seedTracked('config/params.php', "stub\n", "stub\n");
-
-        MockerState::addCondition(
-            'PHPForge\\Scaffold\\Services',
-            'file_put_contents',
-            [],
-            false,
-            default: true,
-        );
-        $out = new BufferedOutputWriter();
-        (new ReapplyService())->run(
-            $this->tempDir,
-            "{$this->tempDir}/vendor",
-            file: 'config/params.php',
-            provider: '',
-            force: true,
-            out: $out,
-        );
-
-        self::assertStringContainsString(
-            'Could not write',
-            $out->stderrBuffer,
-            'An error must be reported when a file cannot be written.',
-        );
-    }
-
-    public function testWriteFailureSkipContinuesIterationToNextReapplicableEntry(): void
-    {
-        // Mock 'file_put_contents' to fail for both entries; each must emit its own diagnostic, proving loop iteration.
-        $this->seedTracked('first.txt', "stub\n", "stub\n");
-        $this->seedTracked('second.txt', "stub\n", "stub\n");
-
-        MockerState::addCondition(
-            'PHPForge\\Scaffold\\Services',
-            'file_put_contents',
-            [],
-            false,
-            default: true,
-        );
-
-        $out = new BufferedOutputWriter();
-        (new ReapplyService())->run(
-            $this->tempDir,
-            "{$this->tempDir}/vendor",
-            file: '',
-            provider: '',
-            force: true,
-            out: $out,
-        );
-
-        self::assertStringContainsString(
-            'first.txt',
-            $out->stderrBuffer,
-            "The first entry must emit its own 'Could not write' diagnostic naming 'first.txt'.",
-        );
-        self::assertStringContainsString(
-            'second.txt',
-            $out->stderrBuffer,
-            "After the first write failure, the foreach must 'continue' so the second entry still emits a diagnostic.",
-        );
-    }
-
-    protected function setUp(): void
-    {
-        $this->setUpTempDirectory();
-    }
-
-    protected function tearDown(): void
-    {
-        $this->tearDownTempDirectory();
-    }
-
-    private function seedTracked(
+    /**
+     * @param array<string, string> $extra Extra lock entry keys of the unsafe entry.
+     */
+    #[DataProvider(ReapplyServiceProvider::class . '::unsafeEntries')]
+    public function unsafeEntryContinuesToTheNextEntry(
         string $destination,
-        string $stubContent,
-        string $currentContent,
-        string $mode = 'replace',
-        string $provider = 'pkg/name',
-        string|null $lockHashOf = null,
+        array $extra,
+        string $kind,
+        string $value,
     ): void {
-        $providerRoot = "{$this->tempDir}/vendor/{$provider}";
+        $project = (new InspectionProject($this->tempDir))
+            ->composer(['p/a'])
+            ->provider('p/a', ['a.txt' => "a\n", 'b.txt' => "b2\n"])
+            ->file('a.txt', "a\n")
+            ->file('b.txt', "b1\n")
+            ->track($destination, 'p/a', extra: $extra)
+            ->track('b.txt', 'p/a');
 
-        $stubRelative = "stubs/$destination";
-        $stubPath = "$providerRoot/$stubRelative";
+        $out = new BufferedOutputWriter();
 
-        $this->ensureTestDirectory(dirname($stubPath));
+        Assert::same(
+            $this->reapply($project, $out),
+            1,
+            "Exit code must be '1' for an unsafe entry.",
+        );
+        Assert::same(
+            $out->stderrBuffer,
+            ConsoleMessage::REAPPLY_UNSAFE_ENTRY->getMessage(
+                $destination,
+                Message::PATH_TRAVERSAL->getMessage($kind, $value),
+            ) . PHP_EOL,
+            'Unsafe entry must be reported.',
+        );
+        Assert::same(
+            $out->stdoutBuffer,
+            ConsoleMessage::REAPPLY_APPLIED->getMessage('b.txt') . PHP_EOL
+            . ExpectedSummary::reapply(1, 0, 0, 1) . PHP_EOL,
+            "'b.txt' must still be reapplied.",
+        );
+    }
 
-        file_put_contents($stubPath, $stubContent);
+    public function userModifiedSkipContinuesToTheNextEntry(): void
+    {
+        $project = (new InspectionProject($this->tempDir))
+            ->composer(['p/a'])
+            ->provider('p/a', ['config/params.php' => "stub\n", 'config/web.php' => "stub\n"])
+            ->file('config/params.php', "stub\n")
+            ->file('config/web.php', "stub\n")
+            ->track('config/params.php', 'p/a')
+            ->track('config/web.php', 'p/a')
+            ->file('config/params.php', "user-edited\n");
 
-        $destAbsolute = $this->tempDir . '/' . $destination;
+        $out = new BufferedOutputWriter();
 
-        $this->ensureTestDirectory(dirname($destAbsolute));
+        Assert::same(
+            $this->reapply($project, $out),
+            0,
+            "Exit code of a user-modified skip must be '0'.",
+        );
+        Assert::same(
+            $out->stderrBuffer,
+            ConsoleMessage::REAPPLY_USER_MODIFIED->getMessage('config/params.php') . PHP_EOL,
+            'User-modified skip must be reported.',
+        );
+        Assert::same(
+            $out->stdoutBuffer,
+            ConsoleMessage::REAPPLY_APPLIED->getMessage('config/web.php') . PHP_EOL
+            . ExpectedSummary::reapply(1, 0, 1, 0, 'user-modified') . PHP_EOL,
+            'Next entry must still be reapplied.',
+        );
+        FileAssert::contentSame(
+            "{$this->tempDir}/config/params.php",
+            "user-edited\n",
+            'User content must be kept without force.',
+        );
+    }
 
-        file_put_contents($destAbsolute, $currentContent);
+    /**
+     * Runs `reapply` over the project without dry run.
+     */
+    private function reapply(
+        InspectionProject $project,
+        BufferedOutputWriter $out,
+        string $file = '',
+        string $provider = '',
+        bool $force = false,
+    ): int {
+        return (new ReapplyService())->run($project->context(), $out, $file, $provider, $force);
+    }
 
-        $hasher = new Hasher();
+    /**
+     * Returns the lock entry recorded after `$destination` of provider `p/a` was written from a stub with `$stub`.
+     *
+     * @return array<string, string> Expected `replace` lock entry.
+     */
+    private static function writtenEntry(string $destination, string $stub): array
+    {
+        $hash = 'sha256:' . hash('sha256', $stub);
 
-        $lockHash = $lockHashOf !== null
-            ? 'sha256:' . hash('sha256', $lockHashOf)
-            : $hasher->hash($destAbsolute);
-
-        $lock = new LockFile($this->tempDir);
-
-        $data = is_file("{$this->tempDir}/scaffold-lock.json") ? $lock->read() : ['providers' => [], 'files' => []];
-
-        $data['providers'][$provider] = [
-            'version' => '0.1.x-dev',
-            'path' => "vendor/{$provider}",
+        return [
+            'hash' => $hash,
+            'provider' => 'p/a',
+            'source' => "stubs/{$destination}",
+            'mode' => 'replace',
+            'stub-hash' => $hash,
         ];
-        $data['files'][$destination] = [
-            'hash' => $lockHash,
-            'provider' => $provider,
-            'source' => $stubRelative,
-            'mode' => $mode,
-        ];
-
-        $lock->write($data);
     }
 }

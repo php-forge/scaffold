@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## 0.3.0 Under development
 
 - feat!: rename package to `php-forge/scaffold` with namespace `PHPForge\Scaffold`; update `require`, `allow-plugins` and class references.
+- feat!: overhaul sync, merge modes and CLI; enforce strict manifests and locks; support Console 8 and drop Composer runtime dependency.
 
 ## 0.2.0 July 04, 2026
 

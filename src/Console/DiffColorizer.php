@@ -9,30 +9,36 @@ use function implode;
 use function str_starts_with;
 
 /**
- * Wraps unified diff lines in raw ANSI color escape codes for decorated terminals.
- *
- * Styles the two leading `--- a/…` and `+++ b/…` file headers in bold, `@@` hunk headers in cyan, added lines in
- * green, and removed lines in red. Header detection is positional (first two lines), so a removed body line that
- * happens to start with `---` is still styled as removed. Raw escape codes keep the output compatible with
- * {@see SymfonyOutputWriter}, which bypasses Symfony's formatter.
- *
- * Usage example:
- * ```php
- * $colorized = (new \PHPForge\Scaffold\Console\DiffColorizer())->colorize($unifiedDiff);
- * ```
+ * Colors unified diff lines with raw ANSI escape codes: the first two lines (file headers) in bold, hunk headers in
+ * cyan, added lines in green and removed lines in red.
  */
 final class DiffColorizer
 {
+    /**
+     * ANSI escape code for bold text.
+     */
     private const string BOLD = "\e[1m";
+    /**
+     * ANSI escape code for cyan text.
+     */
     private const string CYAN = "\e[36m";
+    /**
+     * ANSI escape code for green text.
+     */
     private const string GREEN = "\e[32m";
+    /**
+     * ANSI escape code for red text.
+     */
     private const string RED = "\e[31m";
+    /**
+     * ANSI escape code that resets all text attributes.
+     */
     private const string RESET = "\e[0m";
 
     /**
-     * Colorizes a unified diff produced by {@see \PHPForge\Scaffold\Services\DiffService::buildDiff()}.
+     * Colors a unified diff whose first two lines are the `---` and `+++` file headers.
      *
-     * @param string $diff Unified diff whose first two lines are the `---`/`+++` file headers.
+     * @param string $diff Unified diff with `"\n"` line separators.
      *
      * @return string Diff with each styled line wrapped in ANSI escape codes; context lines stay unstyled.
      */

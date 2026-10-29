@@ -11,14 +11,14 @@
         <rect class="box-bg" x="16" y="16" width="568" height="75" rx="6"/>
         <rect x="16" y="16" width="4" height="75" fill="#1f883d"/>
         <text class="title" x="32" y="44">Agnostic Framework</text>
-        <text class="content" x="32" y="70">Console binary at vendor/bin/scaffold &#8226; 5 commands &#8226; Runs in any PHP project</text>
+        <text class="content" x="32" y="70">Console binary at vendor/bin/scaffold &#8226; 7 commands &#8226; Runs in any PHP project</text>
     </g>
 
     <g>
         <rect class="box-bg" x="16" y="107" width="568" height="75" rx="6"/>
         <rect x="16" y="107" width="4" height="75" fill="#1f883d"/>
         <text class="title" x="32" y="135">Manifest-driven</text>
-        <text class="content" x="32" y="161">Inline + external JSON manifest &#8226; 4 file modes &#8226; SHA-256 hash per tracked file</text>
+        <text class="content" x="32" y="161">Inline + external JSON manifest &#8226; 4 file modes &#8226; SHA-256 hashes per tracked file</text>
     </g>
 
     <g>

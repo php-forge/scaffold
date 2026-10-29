@@ -5,108 +5,63 @@ declare(strict_types=1);
 namespace PHPForge\Scaffold\Tests\Manifest;
 
 use PHPForge\Scaffold\Manifest\Glob;
-use PHPUnit\Framework\Attributes\Group;
-use PHPUnit\Framework\TestCase;
+use PHPForge\Scaffold\Merge\MergeStrategyKind;
+use PHPForge\Scaffold\Tests\Provider\GlobProvider;
+use Testo\Assert;
+use Testo\Codecov\Covers;
+use Testo\Data\DataProvider;
+use Testo\Test;
 
 /**
- * Unit tests for {@see Glob} pattern-to-regex conversion and matching semantics.
+ * Unit tests for {@see Glob} pattern-to-regex conversion, matching semantics and map lookup.
+ *
+ * {@see GlobProvider} for test case data providers.
  */
-#[Group('scaffold')]
-#[Group('manifest')]
-final class GlobTest extends TestCase
+#[Test]
+#[Covers(Glob::class)]
+final class GlobTest
 {
-    public function testDoubleStarCrossesDirectorySeparators(): void
-    {
-        self::assertTrue(
-            Glob::matches('public/**', 'public/assets/css/app.css'),
-            "'**' must match deep nested paths across '/' separators.",
+    /**
+     * Ensures a lookup prefers an exact key, then the first matching glob, and yields `null` without a match.
+     *
+     * @param array<array-key, MergeStrategyKind> $map Values keyed by glob pattern.
+     */
+    #[DataProvider(GlobProvider::class . '::lookups')]
+    public function lookupReturnsTheValueOfTheWinningPattern(
+        array $map,
+        string $path,
+        MergeStrategyKind|null $expected,
+    ): void {
+        Assert::same(
+            Glob::lookup($map, $path),
+            $expected,
+            "Lookup of '{$path}' must yield the value of the winning pattern.",
         );
     }
 
-    public function testDoubleStarPrefixMatchesRootFile(): void
+    /**
+     * Ensures a pattern matches a path exactly when the glob semantics say so.
+     */
+    #[DataProvider(GlobProvider::class . '::matches')]
+    public function matchesFollowsTheGlobSemantics(string $pattern, string $path, bool $expected): void
     {
-        self::assertTrue(
-            Glob::matches('**/.gitignore', '.gitignore'),
-            "'**/.gitignore' must match a root-level '.gitignore' because '**' can expand to empty.",
+        Assert::same(
+            Glob::matches($pattern, $path),
+            $expected,
+            "Match of '{$pattern}' against '{$path}' must be '" . ($expected ? 'true' : 'false') . "'.",
         );
     }
 
-    public function testDoubleStarSlashMatchesDeeplyNestedPath(): void
+    /**
+     * Ensures a pattern compiles to the expected anchored regex.
+     */
+    #[DataProvider(GlobProvider::class . '::regexes')]
+    public function toRegexCompilesTheAnchoredRegex(string $pattern, string $expected): void
     {
-        self::assertTrue(
-            Glob::matches('**/foo', 'a/b/c/foo'),
-            "'**/foo' must match arbitrarily deep nested paths.",
-        );
-    }
-
-    public function testExactPathMatchesItself(): void
-    {
-        self::assertTrue(
-            Glob::matches('config/params.php', 'config/params.php'),
-            'Literal patterns must match themselves byte-exact.',
-        );
-    }
-
-    public function testExactPathRejectsDifferentFile(): void
-    {
-        self::assertFalse(
-            Glob::matches('config/params.php', 'config/web.php'),
-            'Literal patterns must not match a different file name.',
-        );
-    }
-
-    public function testQuestionMarkMatchesSingleNonSeparatorChar(): void
-    {
-        self::assertTrue(
-            Glob::matches('yii?', 'yii0'),
-            "'?' must match a single non-separator character.",
-        );
-        self::assertFalse(
-            Glob::matches('yii?', 'yii/0'),
-            "'?' must not match the path separator.",
-        );
-    }
-
-    public function testSingleStarDoesNotCrossDirectorySeparator(): void
-    {
-        self::assertFalse(
-            Glob::matches('config/*.php', 'config/nested/params.php'),
-            "A single '*' must not match across '/' separators.",
-        );
-    }
-
-    public function testSingleStarMatchesSameLevel(): void
-    {
-        self::assertTrue(
-            Glob::matches('config/*.php', 'config/params.php'),
-            "'*.php' must match any file with '.php' extension at the same directory level.",
-        );
-    }
-
-    public function testToRegexAnchorsTheFullPath(): void
-    {
-        self::assertSame(
-            '#^config/[^/]*\.php$#',
-            Glob::toRegex('config/*.php'),
-            "'toRegex' must produce an anchored regex matching the full string.",
-        );
-    }
-
-    public function testToRegexEscapesPunctuation(): void
-    {
-        self::assertSame(
-            '#^file\.with\.dots$#',
-            Glob::toRegex('file.with.dots'),
-            "Literal '.' characters must be escaped in the produced regex.",
-        );
-    }
-
-    public function testToRegexTreatsDoubleStarSlashAsOptionalDirectoryChain(): void
-    {
-        self::assertSame(
-            '#^(?:.*/)?foo$#',
-            Glob::toRegex('**/foo'),
-            "'**/' must compile to '(?:.*/)?' so the match succeeds with zero or more directory levels.",
+        Assert::same(
+            Glob::toRegex($pattern),
+            $expected,
+            "Regex of '{$pattern}' must match.",
         );
     }
 }

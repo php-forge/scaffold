@@ -3,24 +3,30 @@
 ## System requirements
 
 - [PHP](https://www.php.net/downloads) `8.3` or higher.
-- [Composer](https://getcomposer.org/download/) `2.9` or higher.
+- [Composer](https://getcomposer.org/download/) `2.3` or higher (the plugin requires `composer-plugin-api` `^2.3`).
+- [Symfony Console](https://symfony.com/doc/current/components/console.html) `^7.4` or `^8.0`, installed as a
+  dependency. Symfony Console 8 requires PHP 8.4, so a project on PHP 8.3 resolves 7.4.
+- [php-forge/diff](https://github.com/php-forge/diff), installed as a dependency, which renders the unified diffs with
+  Git's default algorithm (Myers with the indent heuristic).
 
-The plugin is framework-agnostic. It works in Yii2, Yii3, Laravel, Symfony, Slim, Mezzio, or plain PHP projects as long
-as they use Composer.
+The plugin is framework-agnostic: it works in any project managed by Composer.
 
-## Installation
+## Install the plugin
 
-Allow the Composer plugin, then install it:
+Scaffolding is a development-time task, so require the plugin in `require-dev` and allow it to run:
 
 ```bash
 composer config allow-plugins.php-forge/scaffold true
-composer require php-forge/scaffold:^0.3
+composer require --dev php-forge/scaffold:^0.3
 ```
 
-Alternatively, add the permission to your `composer.json` before running `composer require`:
+The equivalent `composer.json` configuration is:
 
 ```json
 {
+    "require-dev": {
+        "php-forge/scaffold": "^0.3"
+    },
     "config": {
         "allow-plugins": {
             "php-forge/scaffold": true
@@ -29,10 +35,16 @@ Alternatively, add the permission to your `composer.json` before running `compos
 }
 ```
 
-## Authorize scaffold providers
+Without the `allow-plugins` entry, Composer asks whether to trust the plugin, and non-interactive runs such as CI fail.
 
-Install the scaffold provider packages required by your project, then declare which are permitted to write files under
-`extra.scaffold.allowed-packages`. The plugin ignores all providers that are not listed here.
+## Authorize providers
+
+Require the provider packages and list, in order, the ones allowed to write files into the project. Packages that are
+not listed are ignored.
+
+```bash
+composer require --dev php-forge/baseline php-forge/coding-standard
+```
 
 ```json
 {
@@ -44,34 +56,82 @@ Install the scaffold provider packages required by your project, then declare wh
 }
 ```
 
-Run `composer install` or `composer update` to trigger the scaffold process. The plugin applies all file mappings
-declared by the listed providers and writes `scaffold-lock.json`.
+Run `composer install` or `composer update`. The plugin applies the files of every listed provider, writes
+`scaffold-lock.json`, and ends with a summary line on stdout:
 
-## Commit the lockfile
+```text
+[scaffold] 10 files written, 1 unchanged, 1 warning.
+```
 
-`scaffold-lock.json` records the hash of every file written by the scaffold process. Commit it to version control
-alongside `composer.lock` so that collaborators and CI can detect user-modified files and reproduce the exact scaffold
-state.
+Warnings, such as an existing file that the first install overwrote, are printed on stderr above it; see
+[File Modes](modes.md#replace). Review the result with `git diff`.
+
+## Commit the lock file
+
+`scaffold-lock.json` records which provider owns each file, how it was written and the hashes of the last apply. Commit
+it with the scaffolded files, so every clone and CI job detects user-modified files and provider updates the same way:
 
 ```bash
 git add scaffold-lock.json
-git commit -m "chore: add scaffold-lock.json"
 ```
 
-## Invoke the console CLI
+## Composer flags
 
-After `composer install`, the Symfony Console CLI is available at `vendor/bin/scaffold`:
+The plugin listens to Composer events as a plugin, not as a script:
+
+| Command                          | Scaffolds?                                                               |
+| -------------------------------- | ------------------------------------------------------------------------ |
+| `composer install`               | Yes.                                                                     |
+| `composer install --no-scripts`  | Yes: `--no-scripts` disables scripts, not plugin event subscribers.      |
+| `composer install --no-plugins`  | No: the plugin is not loaded. Run `vendor/bin/scaffold sync` afterwards. |
+| `composer install --no-dev`      | No, on a fresh install: the plugin in `require-dev` is not installed.    |
+| Any command with `"auto": false` | No: run `vendor/bin/scaffold sync` when you want to apply the providers. |
+
+## Manual mode with auto: false
+
+To review every change to the shared files before it lands, disable the Composer hooks and apply the providers with the
+console:
+
+```json
+{
+    "extra": {
+        "scaffold": {
+            "auto": false,
+            "allowed-packages": ["php-forge/baseline", "php-forge/coding-standard"]
+        }
+    }
+}
+```
+
+Composer runs then print
+`[scaffold] Auto-scaffold disabled via "extra.scaffold.auto"; run "vendor/bin/scaffold" manually.` Bootstrap the project
+with `sync`, which also creates `scaffold-lock.json`:
+
+```text
+$ vendor/bin/scaffold status
+...
+[scaffold] 10 files: 10 pending.
+$ vendor/bin/scaffold sync --dry-run --exit-code
+...
+[scaffold] sync --dry-run: 10 files would change, 0 unchanged, 0 orphan, 0 errors.
+$ vendor/bin/scaffold sync
+[scaffold] sync: 10 files written, 0 unchanged.
+```
+
+Run `vendor/bin/scaffold sync` again after each provider update.
+
+## Invoke the console
+
+The plugin installs a standalone console application at `vendor/bin/scaffold`; it starts from Composer's autoloader and
+needs no framework bootstrap:
 
 ```bash
-vendor/bin/scaffold list                      # discover available commands
-vendor/bin/scaffold status                    # what changed since last scaffold?
-vendor/bin/scaffold providers                 # list providers + file counts
-vendor/bin/scaffold diff config/params.php    # review changes on a single file
-vendor/bin/scaffold reapply --force           # replay stubs, overwriting user edits
-vendor/bin/scaffold eject config/params.php --yes   # detach a file from the lock
+vendor/bin/scaffold list        # available commands
+vendor/bin/scaffold status      # state of every scaffolded file
+vendor/bin/scaffold diff --all  # what applying the providers would change
 ```
 
-No framework bootstrap is required; the binary starts directly from Composer's autoloader.
+See [Console Commands](console.md) for every command and option.
 
 ## Next steps
 

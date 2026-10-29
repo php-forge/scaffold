@@ -1,0 +1,5 @@
+# Local overrides
+APP_ENV=dev
+DB_DSN=mysql:host=db;dbname=myapp
+DB_USER=root
+MAILER_DSN=smtp://localhost:1025

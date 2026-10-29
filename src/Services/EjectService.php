@@ -4,61 +4,62 @@ declare(strict_types=1);
 
 namespace PHPForge\Scaffold\Services;
 
-use PHPForge\Scaffold\Console\{ExitCode, OutputWriter};
+use PHPForge\Scaffold\Console\{ExitCode, Message, OutputWriter};
 use PHPForge\Scaffold\Scaffold\Lock\LockFile;
 
-use function sprintf;
-
 /**
- * Removes a file entry from `scaffold-lock.json` without deleting the file from disk.
+ * Marks a file entry as ejected in `scaffold-lock.json` so scaffold stops writing it; the file stays on disk.
  */
 final class EjectService
 {
     /**
-     * Ejects `$file` from the lock file under `$projectRoot`.
-     *
-     * Without `$confirmed=true`, only prints what would happen. With it, removes the entry and rewrites the lock.
-     * The on-disk file is never deleted.
+     * Marks the entry of `$file` as ejected, or only previews the change when `$confirmed` is `false`.
      *
      * @param string $projectRoot Absolute path to the project root.
-     * @param string $file Destination path as recorded in `scaffold-lock.json`.
-     * @param bool $confirmed When `true`, performs the ejection. Otherwise only previews.
      * @param OutputWriter $out Output sink.
+     * @param string $file Destination path as recorded in `scaffold-lock.json`.
+     * @param bool $confirmed Whether to write the ejection; `false` only previews it.
      *
-     * @return int `0` on success (including previews), non-zero when the entry is not tracked.
+     * @throws \RuntimeException when the lock file cannot be read or written.
+     *
+     * @return int `0` on success, including previews and entries already ejected; `1` when the entry is not tracked.
      */
-    public function run(string $projectRoot, string $file, bool $confirmed, OutputWriter $out): int
+    public function run(string $projectRoot, OutputWriter $out, string $file, bool $confirmed = false): int
     {
         $lock = new LockFile($projectRoot);
 
         $data = $lock->read();
 
         if (!isset($data['files'][$file])) {
-            $out->writeStderr(sprintf('[scaffold] "%s" is not tracked in scaffold-lock.json.', $file));
+            $out->writeStderr(
+                Message::COMMAND_FILE_NOT_TRACKED->getMessage($file),
+            );
 
             return ExitCode::Error->value;
         }
 
-        if (!$confirmed) {
+        if (($data['files'][$file]['ejected'] ?? false) === true) {
             $out->writeStdout(
-                sprintf(
-                    '[scaffold] Would remove "%s" from scaffold-lock.json. Run with --yes to confirm.',
-                    $file,
-                ),
+                Message::EJECT_ALREADY_EJECTED->getMessage($file),
             );
 
             return ExitCode::Ok->value;
         }
 
-        unset($data['files'][$file]);
+        if (!$confirmed) {
+            $out->writeStdout(
+                Message::EJECT_CONFIRMATION_REQUIRED->getMessage($file),
+            );
+
+            return ExitCode::Ok->value;
+        }
+
+        $data['files'][$file]['ejected'] = true;
 
         $lock->write($data);
 
         $out->writeStdout(
-            sprintf(
-                '[scaffold] Removed "%s" from scaffold-lock.json. The file was not deleted from disk.',
-                $file,
-            ),
+            Message::EJECT_EJECTED->getMessage($file),
         );
 
         return ExitCode::Ok->value;

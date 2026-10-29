@@ -4,181 +4,135 @@ declare(strict_types=1);
 
 namespace PHPForge\Scaffold\Tests\Services;
 
-use PHPForge\Scaffold\Scaffold\Lock\LockFile;
+use PHPForge\Scaffold\Console\Message;
 use PHPForge\Scaffold\Services\EjectService;
-use PHPForge\Scaffold\Tests\Support\{BufferedOutputWriter, TempDirectoryTrait};
-use PHPUnit\Framework\Attributes\Group;
-use PHPUnit\Framework\TestCase;
+use PHPForge\Scaffold\Tests\Support\{BufferedOutputWriter, FileAssert, InspectionProject, TempDirectoryTrait};
+use Testo\Assert;
+use Testo\Codecov\Covers;
+use Testo\Data\DataSet;
+use Testo\Test;
+
+use function file_get_contents;
 
 /**
- * Unit tests for {@see EjectService} covering dry-run, confirmed removal, and untracked-file error paths.
+ * Unit tests for {@see EjectService} covering dry-run, confirmed ejection, and untracked-file error paths.
  */
-#[Group('scaffold')]
-#[Group('services')]
-final class EjectServiceTest extends TestCase
+#[Test]
+#[Covers(EjectService::class)]
+final class EjectServiceTest
 {
     use TempDirectoryTrait;
 
-    public function testConfirmedEjectSuccessMessageEndsWithSinglePhpEolSuffix(): void
+    #[DataSet([false], 'preview')]
+    #[DataSet([true], 'confirmed')]
+    public function alreadyEjectedEntryReportsOnlyItsState(bool $confirmed): void
     {
-        $this->seedTracked('config/params.php');
+        (new InspectionProject($this->tempDir))
+            ->track('config/params.php', 'pkg/name', extra: ['ejected' => true]);
 
-        file_put_contents("{$this->tempDir}/config/params.php", "return [];\n");
+        $before = file_get_contents(
+            "{$this->tempDir}/scaffold-lock.json",
+        );
 
         $out = new BufferedOutputWriter();
-        (new EjectService())->run($this->tempDir, 'config/params.php', confirmed: true, out: $out);
 
-        self::assertStringEndsWith(
-            PHP_EOL,
-            $out->stdoutBuffer,
-            "The 'Removed' confirmation must end with PHP_EOL so shells render it on its own line.",
-        );
-        self::assertStringStartsNotWith(
-            PHP_EOL,
-            $out->stdoutBuffer,
-            "The 'Removed' confirmation must not be prefixed with PHP_EOL.",
-        );
-    }
-
-    public function testDryRunLeavesLockUntouchedWithoutConfirmation(): void
-    {
-        $this->seedTracked('config/params.php');
-
-        $out = new BufferedOutputWriter();
-        $exitCode = (new EjectService())->run($this->tempDir, 'config/params.php', confirmed: false, out: $out);
-
-        self::assertSame(
+        Assert::same(
+            (new EjectService())->run($this->tempDir, $out, 'config/params.php', $confirmed),
             0,
-            $exitCode,
-            "Dry-run should exit with code '0' to indicate no error.",
+            "Exit code must be '0' for an entry that is already ejected.",
         );
-        self::assertStringContainsString(
-            'Would remove',
+        Assert::same(
             $out->stdoutBuffer,
-            'Dry-run must indicate which files would be removed.',
+            Message::EJECT_ALREADY_EJECTED->getMessage('config/params.php') . PHP_EOL,
+            'State line must be the only output.',
         );
-
-        $data = (new LockFile($this->tempDir))->read();
-
-        self::assertArrayHasKey(
-            'config/params.php',
-            $data['files'],
-            'File must remain tracked in the lock file during a dry-run.',
+        Assert::same(
+            file_get_contents("{$this->tempDir}/scaffold-lock.json"),
+            $before,
+            'Lock must not be rewritten.',
         );
     }
 
-    public function testDryRunMessageEndsWithSinglePhpEolSuffix(): void
+    public function confirmedEjectMarksTheEntryAndKeepsTheFile(): void
     {
-        $this->seedTracked('config/params.php');
+        $project = (new InspectionProject($this->tempDir))
+            ->file('config/params.php', "return [];\n")
+            ->track('config/params.php', 'pkg/name');
 
         $out = new BufferedOutputWriter();
-        (new EjectService())->run($this->tempDir, 'config/params.php', confirmed: false, out: $out);
 
-        self::assertStringEndsWith(
-            PHP_EOL,
-            $out->stdoutBuffer,
-            "The dry-run 'Would remove' message must end with PHP_EOL.",
-        );
-        self::assertStringStartsNotWith(
-            PHP_EOL,
-            $out->stdoutBuffer,
-            "The dry-run 'Would remove' message must not be prefixed with PHP_EOL.",
-        );
-    }
-
-    public function testEjectRemovesEntryAndPreservesFileOnDiskWhenConfirmed(): void
-    {
-        $this->seedTracked('config/params.php');
-
-        file_put_contents("{$this->tempDir}/config/params.php", "return [];\n");
-
-        $out = new BufferedOutputWriter();
-        $exitCode = (new EjectService())->run($this->tempDir, 'config/params.php', confirmed: true, out: $out);
-
-        self::assertSame(
+        Assert::same(
+            (new EjectService())->run($this->tempDir, $out, 'config/params.php', true),
             0,
-            $exitCode,
-            "When the eject is confirmed, the exit code must be '0'.",
+            "Exit code must be '0' when the eject is confirmed.",
         );
-        self::assertStringContainsString(
-            'Removed',
+        Assert::same(
             $out->stdoutBuffer,
-            'When the eject is confirmed, the output must indicate the removal.',
+            Message::EJECT_EJECTED->getMessage('config/params.php') . PHP_EOL,
+            'Confirmation must be the only output.',
         );
-
-        $data = (new LockFile($this->tempDir))->read();
-
-        self::assertArrayNotHasKey(
-            'config/params.php',
-            $data['files'],
-            'File must no longer be tracked in the lock file after confirmed eject.',
+        Assert::same(
+            $project->lock()->read()['files']['config/params.php']['ejected'] ?? null,
+            true,
+            "Entry must be kept and marked 'ejected'.",
         );
-        self::assertFileExists(
+        FileAssert::contentSame(
             "{$this->tempDir}/config/params.php",
-            'Eject must never delete the on-disk file.',
+            "return [];\n",
+            'Eject must never touch the file on disk.',
         );
     }
 
-    public function testReturnsErrorWhenFileIsNotTracked(): void
+    public function previewPrintsTheHintAndLeavesTheLockUntouched(): void
     {
-        (new LockFile($this->tempDir))->write(['providers' => [], 'files' => []]);
+        (new InspectionProject($this->tempDir))
+            ->track('config/params.php', 'pkg/name');
+
+        $before = file_get_contents(
+            "{$this->tempDir}/scaffold-lock.json",
+        );
 
         $out = new BufferedOutputWriter();
-        $exitCode = (new EjectService())->run($this->tempDir, 'missing.php', confirmed: true, out: $out);
 
-        self::assertSame(
+        Assert::same(
+            (new EjectService())->run($this->tempDir, $out, 'config/params.php'),
+            0,
+            "Exit code of a preview must be '0'.",
+        );
+        Assert::same(
+            $out->stdoutBuffer,
+            Message::EJECT_CONFIRMATION_REQUIRED->getMessage('config/params.php') . PHP_EOL,
+            'Preview must be the only output.',
+        );
+        Assert::same(
+            file_get_contents("{$this->tempDir}/scaffold-lock.json"),
+            $before,
+            'Preview must not rewrite the lock.',
+        );
+    }
+
+    public function untrackedFileIsAnError(): void
+    {
+        (new InspectionProject($this->tempDir))
+            ->lock()
+            ->write(['providers' => [], 'files' => []]);
+
+        $out = new BufferedOutputWriter();
+
+        Assert::same(
+            (new EjectService())->run($this->tempDir, $out, 'missing.php', true),
             1,
-            $exitCode,
-            "When the file is not tracked, the exit code must be '1'.",
+            "Exit code must be '1' when the file is not tracked.",
         );
-        self::assertStringContainsString(
-            'not tracked',
+        Assert::same(
             $out->stderrBuffer,
-            'When the file is not tracked, the output must indicate the error.',
+            Message::COMMAND_FILE_NOT_TRACKED->getMessage('missing.php') . PHP_EOL,
+            'Error must be the only stderr line.',
         );
-        self::assertStringEndsWith(
-            PHP_EOL,
-            $out->stderrBuffer,
-            "The 'not tracked' stderr message must end with PHP_EOL so subsequent stderr writes start on a fresh line.",
+        Assert::same(
+            $out->stdoutBuffer,
+            '',
+            'Nothing may be written to stdout.',
         );
-        self::assertStringStartsNotWith(
-            PHP_EOL,
-            $out->stderrBuffer,
-            "The 'not tracked' stderr message must not begin with PHP_EOL.",
-        );
-    }
-
-    protected function setUp(): void
-    {
-        $this->setUpTempDirectory();
-    }
-
-    protected function tearDown(): void
-    {
-        $this->tearDownTempDirectory();
-    }
-
-    /**
-     * Seeds the lock file with a tracked file and ensures the test directory exists.
-     *
-     * @param string $destination Path of the file to track, relative to the project root.
-     */
-    private function seedTracked(string $destination): void
-    {
-        (new LockFile($this->tempDir))->write(
-            [
-                'providers' => [],
-                'files' => [
-                    $destination => [
-                        'hash' => 'sha256:abc',
-                        'provider' => 'pkg/name',
-                        'source' => "stubs/{$destination}",
-                        'mode' => 'replace',
-                    ],
-                ],
-            ],
-        );
-
-        $this->ensureTestDirectory(dirname("{$this->tempDir}/{$destination}"));
     }
 }

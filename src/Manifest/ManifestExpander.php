@@ -5,37 +5,30 @@ declare(strict_types=1);
 namespace PHPForge\Scaffold\Manifest;
 
 use FilesystemIterator;
+use PHPForge\Scaffold\Exception\Message;
+use PHPForge\Scaffold\Merge\MergeStrategyKind;
 use RecursiveCallbackFilterIterator;
 use RecursiveDirectoryIterator;
 use RecursiveIteratorIterator;
 use RuntimeException;
 use SplFileInfo;
 
+use function array_values;
 use function is_dir;
 use function is_file;
 use function rtrim;
 use function sort;
-use function sprintf;
-use function str_ends_with;
-use function str_replace;
 use function strlen;
 use function substr;
 
 /**
- * Expands a validated `scaffold.json` manifest into a flat list of {@see FileMapping} entries.
+ * Expands a validated manifest into file mappings; a later `copy[]` entry overrides an earlier one per destination.
  *
- * Walks each path listed in `copy`:
- *
- * - Explicit file entries pass through unconditionally (bypass default excludes).
- * - Directory entries are walked recursively; the built-in {@see DefaultExcludes} patterns plus the manifest's own
- *   `exclude[]` list filter the walk output.
- *
- * Mode resolution falls back to {@see FileMode::Replace} when no pattern in `modes{}` matches the destination.
- *
- * @phpstan-type ValidatedManifest = array{
+ * @phpstan-type ValidatedManifest array{
  *   copy: list<array{from: string, to: string}>,
  *   exclude: list<string>,
- *   modes: array<string, FileMode>,
+ *   modes: array<array-key, FileMode>,
+ *   merge?: array<array-key, MergeStrategyKind>,
  * }
  */
 final class ManifestExpander
@@ -54,91 +47,45 @@ final class ManifestExpander
     public function expand(array $manifest, string $providerPath, string $providerName): array
     {
         $mappings = [];
-        $seen = [];
 
         foreach ($manifest['copy'] as $entry) {
             $from = $entry['from'];
-            $to = $entry['to'];
             $absolute = "{$providerPath}/{$from}";
 
-            if (is_file($absolute)) {
-                $source = self::normalise($from);
-                $destination = self::normalise($to);
+            $pairs = match (true) {
+                is_file($absolute) => [$from => $entry['to']],
+                is_dir($absolute) => $this->expandDirectory($absolute, $from, $entry['to'], $manifest['exclude']),
+                default => throw new RuntimeException(
+                    Message::MANIFEST_COPY_ENTRY_NOT_FOUND->getMessage($from, $providerPath),
+                ),
+            };
 
-                if (isset($seen[$destination])) {
-                    continue;
-                }
-
-                // The seen-map value is irrelevant; only key existence matters in the isset() guard above.
-                // @codeCoverageIgnoreStart
-                $seen[$destination] = true;
-                // @codeCoverageIgnoreEnd
-
-                $mappings[] = $this->buildMapping(
+            foreach ($pairs as $source => $destination) {
+                // Assigning an existing key keeps its position, so a later entry overrides an earlier one in place.
+                $mappings[$destination] = new FileMapping(
                     $destination,
-                    $source,
-                    $this->resolveMode($destination, $manifest['modes']),
+                    (string) $source,
+                    Glob::lookup($manifest['modes'], $destination) ?? FileMode::Replace,
                     $providerName,
                     $providerPath,
+                    Glob::lookup($manifest['merge'] ?? [], $destination),
                 );
-
-                continue;
             }
-
-            if (is_dir($absolute)) {
-                // The +1 offset in self::translate() already skips the prefix separator, so trailing slashes here are
-                // absorbed downstream; the rtrim is kept defensively for clarity and substring-safety.
-                // @codeCoverageIgnoreStart
-                $sourcePrefix = rtrim(self::normalise($from), '/');
-                // @codeCoverageIgnoreEnd
-                $sourcePrefix = $sourcePrefix === '.' ? '' : $sourcePrefix;
-                $destPrefix = rtrim(self::normalise($to), '/');
-                $destPrefix = $destPrefix === '.' ? '' : $destPrefix;
-
-                foreach ($this->walk($absolute, $sourcePrefix, $manifest['exclude']) as $source) {
-                    $destination = self::translate($source, $sourcePrefix, $destPrefix);
-
-                    if (isset($seen[$destination])) {
-                        continue;
-                    }
-
-                    // The seen-map value is irrelevant; only key existence matters in the isset() guard above.
-                    // @codeCoverageIgnoreStart
-                    $seen[$destination] = true;
-                    // @codeCoverageIgnoreEnd
-
-                    $mappings[] = $this->buildMapping(
-                        $destination,
-                        $source,
-                        $this->resolveMode($destination, $manifest['modes']),
-                        $providerName,
-                        $providerPath,
-                    );
-                }
-
-                continue;
-            }
-
-            throw new RuntimeException(
-                sprintf('Scaffold copy entry "%s" does not exist under provider root "%s".', $from, $providerPath),
-            );
         }
 
-        return $mappings;
+        return array_values($mappings);
     }
 
     /**
-     * Recursive filter callback deciding whether an iterator entry should be visited.
+     * Returns whether the directory walk accepts `$current`: files always, directories only when no `<dir>/**`
+     * exclude prunes them.
      *
-     * Files pass through unconditionally so they can be exclude-filtered at file level; directories are tested against
-     * the default and user dir-prune patterns so that excluded subtrees (for example `vendor/**`) are never descended.
+     * @param SplFileInfo $current Entry the directory iterator is visiting.
+     * @param string $absolutePrefix Walked directory on disk, without trailing slash.
+     * @param string $relativePrefix Provider-relative path of the walked directory, or an empty string for the root.
+     * @param list<string> $userExcludes Manifest `exclude` patterns.
      *
-     * @param SplFileInfo $current Filesystem entry offered by the inner iterator.
-     * @param string $absolutePrefix Rtrim'd absolute path of the walk root on disk.
-     * @param string $relativePrefix Relative directory prefix to prepend when deriving the walk-relative path.
-     * @param list<string> $userExcludes User-declared exclude patterns from the manifest.
-     *
-     * @return bool `true` when the iterator should accept the entry (and descend, for dirs), `false` to prune it.
+     * @return bool `true` when the entry is a file or a directory the walk may descend into, `false` otherwise.
      */
     private function acceptIteratorEntry(
         SplFileInfo $current,
@@ -146,167 +93,73 @@ final class ManifestExpander
         string $relativePrefix,
         array $userExcludes,
     ): bool {
-        // Files pass through unconditionally; only directories are subject to the descent-prune patterns. Without
-        // this branch, a file like 'secrets' would be dropped when the manifest contains 'secrets/**', since
-        // canDescend treats matching exclude prefixes as a hard reject regardless of entry type.
-        // @codeCoverageIgnoreStart
-        if ($current->isDir() === false) {
+        // Files pass through unconditionally: a file named `secrets` is not pruned by a `secrets/**` exclude.
+        if (!$current->isDir()) {
             return true;
         }
-        // @codeCoverageIgnoreEnd
 
-        return self::canDescend(
-            self::relativise($current, $absolutePrefix, $relativePrefix),
-            $userExcludes,
-        );
+        $directory = self::relativise($current, $absolutePrefix, $relativePrefix);
+
+        return !Glob::prunes(DefaultExcludes::PATTERNS, $directory) && !Glob::prunes($userExcludes, $directory);
     }
 
     /**
-     * Builds a {@see FileMapping} for a given source-destination pair.
+     * Returns the files under a `copy[]` directory with their destinations, by replacing the source directory prefix
+     * with the destination prefix of the entry.
      *
-     * @param string $destination Relative destination path inside the consumer project, using forward slashes.
-     * @param string $source Relative source path inside the provider root, using forward slashes.
-     * @param FileMode $mode Resolved file mode for the mapping.
-     * @param string $providerName Composer package name (used to attribute the mapping for provenance).
-     * @param string $providerPath Absolute path to the provider root on disk.
+     * @param string $absoluteDir Absolute path of the directory.
+     * @param string $from Provider-relative `from` path of the entry.
+     * @param string $to Project-relative `to` path of the entry.
+     * @param list<string> $userExcludes Manifest `exclude` patterns.
      *
-     * @return FileMapping Concrete file mapping for the given source/destination pair and mode.
+     * @return array<array-key, string> Project-relative destinations keyed by sorted provider-relative source;
+     * integer-like sources (`"123"`) are integer keys.
      */
-    private function buildMapping(
-        string $destination,
-        string $source,
-        FileMode $mode,
-        string $providerName,
-        string $providerPath,
-    ): FileMapping {
-        return new FileMapping(
-            destination: $destination,
-            source: $source,
-            mode: $mode,
-            providerName: $providerName,
-            providerPath: $providerPath,
-        );
-    }
-
-    /**
-     * Determines whether the iterator may descend into `$relativeDir` based on both default and user exclude patterns.
-     *
-     * The directory may be pruned whenever a pattern of the form `$relativeDir/**` exists in either layer, because
-     * every possible descendant would then match an exclude and be dropped at file level anyway.
-     *
-     * @param string $relativeDir Directory path relative to the walk root, using forward slashes.
-     * @param list<string> $userExcludes User-declared exclude patterns from the manifest.
-     *
-     * @return bool `true` when the iterator should descend, `false` when the subtree may be skipped entirely.
-     */
-    private static function canDescend(string $relativeDir, array $userExcludes): bool
+    private function expandDirectory(string $absoluteDir, string $from, string $to, array $userExcludes): array
     {
-        if (DefaultExcludes::matchesDirectory($relativeDir)) {
-            return false;
+        // A trailing slash (`config/`) would otherwise leave `config//file` paths that excludes do not match.
+        $sourcePrefix = rtrim($from, '/');
+
+        $sourcePrefix = $sourcePrefix === '.' ? '' : $sourcePrefix;
+
+        $destPrefix = rtrim($to, '/');
+
+        $destPrefix = $destPrefix === '.' ? '' : $destPrefix;
+
+        $pairs = [];
+
+        foreach ($this->walk($absoluteDir, $sourcePrefix, $userExcludes) as $source) {
+            $pairs[$source] = self::translate($source, $sourcePrefix, $destPrefix);
         }
 
-        foreach ($userExcludes as $pattern) {
-            if (str_ends_with($pattern, '/**') && substr($pattern, 0, -3) === $relativeDir) {
-                return false;
-            }
-        }
-
-        return true;
+        return $pairs;
     }
 
     /**
-     * Determines if a given relative path matches any of the provided glob patterns.
+     * Returns the provider-relative path of a walked entry, with forward slashes.
      *
-     * @param list<string> $patterns Glob patterns to evaluate.
-     * @param string $path Relative path to test, using forward slashes.
+     * @param SplFileInfo $entry Entry under the walked directory, joined with forward slashes.
+     * @param string $absolutePrefix Walked directory on disk, without trailing slash.
+     * @param string $relativePrefix Provider-relative path of the walked directory, or an empty string for the root.
      *
-     * @return bool `true` when `$path` matches any of the given glob patterns, `false` otherwise.
-     */
-    private static function matchesAny(string $path, array $patterns): bool
-    {
-        foreach ($patterns as $pattern) {
-            if (Glob::matches($pattern, $path)) {
-                return true;
-            }
-        }
-
-        return false;
-    }
-
-    /**
-     * Normalises a relative path to forward slashes.
-     *
-     * This is a no-op on POSIX but ensures consistent path handling on Windows, where `copy[]` entries may be declared
-     * with either slash type.
-     *
-     * @param string $path Relative path to normalise, using either forward or backward slashes.
-     *
-     * @return string Normalised path with forward slashes.
-     */
-    private static function normalise(string $path): string
-    {
-        // Windows-only normalisation: str_replace is a no-op on POSIX (no backslash separators).
-        // @codeCoverageIgnoreStart
-        return str_replace('\\', '/', $path);
-        // @codeCoverageIgnoreEnd
-    }
-
-    /**
-     * Derives the walk-relative path for a filesystem entry, using forward slashes.
-     *
-     * Called both by the recursive filter (to decide whether to prune a directory) and by the main loop (to emit file
-     * destinations), so it produces the exact same string for a given entry in either context.
-     *
-     * @param SplFileInfo $entry Filesystem entry returned by the iterator.
-     * @param string $absolutePrefix Rtrim'd absolute path of the walk root on disk.
-     * @param string $relativePrefix Relative directory prefix to prepend, or an empty string when walking from root.
-     *
-     * @return string Path relative to the walk root, using forward slashes.
+     * @return string Provider-relative path of the entry.
      */
     private static function relativise(SplFileInfo $entry, string $absolutePrefix, string $relativePrefix): string
     {
-        $absolute = self::normalise($entry->getPathname());
-
-        $tail = substr($absolute, strlen($absolutePrefix) + 1);
+        $tail = substr($entry->getPathname(), strlen($absolutePrefix) + 1);
 
         return $relativePrefix === '' ? $tail : "{$relativePrefix}/{$tail}";
     }
 
     /**
-     * Resolves the {@see FileMode} for `$relative` against the manifest's `modes` map.
+     * Maps a walked source path to its destination by replacing the source directory prefix with the destination
+     * prefix of the `copy[]` entry.
      *
-     * Exact path matches win over globs; globs are evaluated in declaration order.
+     * @param string $source Provider-relative source path.
+     * @param string $sourcePrefix Source directory without trailing slash, or an empty string for the provider root.
+     * @param string $destPrefix Destination directory without trailing slash, or an empty string for the project root.
      *
-     * @param array<string, FileMode> $modes Mode overrides from the manifest.
-     */
-    private function resolveMode(string $relative, array $modes): FileMode
-    {
-        if (isset($modes[$relative])) {
-            return $modes[$relative];
-        }
-
-        foreach ($modes as $pattern => $mode) {
-            if (Glob::matches($pattern, $relative)) {
-                return $mode;
-            }
-        }
-
-        return FileMode::Replace;
-    }
-
-    /**
-     * Translates a walk-relative source path into its destination path by swapping the source prefix for the
-     * destination prefix.
-     *
-     * Used when a `copy[]` entry remaps a directory (`{from: "metadata/.github", to: ".github"}`) so each file
-     * discovered under the source prefix lands at the equivalent location under the destination prefix.
-     *
-     * @param string $source Walk-relative source path (already prefixed with the source directory).
-     * @param string $sourcePrefix Source directory prefix without trailing slash, or empty when walking from root.
-     * @param string $destPrefix Destination directory prefix without trailing slash, or empty when destination is
-     * the consumer root.
-     *
-     * @return string Destination path equivalent to `$source` after prefix translation.
+     * @return string Project-relative destination path.
      */
     private static function translate(string $source, string $sourcePrefix, string $destPrefix): string
     {
@@ -320,22 +173,26 @@ final class ManifestExpander
     }
 
     /**
-     * Walks a directory listed in `copy[]`, filtering out paths matching either default excludes or user excludes.
+     * Returns the files under a `copy[]` directory that match neither a default nor a manifest exclude.
      *
-     * @param string $absoluteDir Absolute path to the directory to walk.
-     * @param string $relativePrefix Relative directory prefix to prepend to each discovered file.
-     * @param list<string> $userExcludes Glob patterns declared in `scaffold.exclude`.
+     * @param string $absoluteDir Absolute path of the directory.
+     * @param string $relativePrefix Provider-relative path of the directory, or an empty string for the root.
+     * @param list<string> $userExcludes Manifest `exclude` patterns.
      *
-     * @return list<string> Ordered list of relative file paths inside the directory that survive both exclusion layers.
+     * @return list<string> Sorted provider-relative file paths.
      */
     private function walk(string $absoluteDir, string $relativePrefix, array $userExcludes): array
     {
         $results = [];
-        $absolutePrefix = rtrim(self::normalise($absoluteDir), '/');
+
+        $absolutePrefix = rtrim($absoluteDir, '/');
 
         $iterator = new RecursiveIteratorIterator(
             new RecursiveCallbackFilterIterator(
-                new RecursiveDirectoryIterator($absoluteDir, FilesystemIterator::SKIP_DOTS),
+                new RecursiveDirectoryIterator(
+                    $absoluteDir,
+                    FilesystemIterator::SKIP_DOTS | FilesystemIterator::UNIX_PATHS,
+                ),
                 fn(SplFileInfo $current): bool => $this->acceptIteratorEntry(
                     $current,
                     $absolutePrefix,
@@ -349,18 +206,15 @@ final class ManifestExpander
         foreach ($iterator as $entry) {
             $relative = self::relativise($entry, $absolutePrefix, $relativePrefix);
 
-            if (DefaultExcludes::matches($relative) || self::matchesAny($relative, $userExcludes)) {
+            if (Glob::matchesAny(DefaultExcludes::PATTERNS, $relative) || Glob::matchesAny($userExcludes, $relative)) {
                 continue;
             }
 
             $results[] = $relative;
         }
 
-        // Determinism guarantee for cross-filesystem reproducibility; many filesystems already return sorted dirents,
-        // so removing the sort is mutation-equivalent on POSIX/ext4 testbeds.
-        // @codeCoverageIgnoreStart
+        // Directory entry order depends on the filesystem; sorting keeps the mappings reproducible.
         sort($results);
-        // @codeCoverageIgnoreEnd
 
         return $results;
     }

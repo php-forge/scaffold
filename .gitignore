@@ -1,4 +1,5 @@
 # AI agents (if present)
+.agents/skills/testo-*
 .codex
 .claude
 

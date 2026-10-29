@@ -5,17 +5,17 @@ declare(strict_types=1);
 namespace PHPForge\Scaffold\Scaffold\Modes;
 
 /**
- * Enumerates the possible outcomes after applying a scaffold file mapping.
+ * Represents the outcome of applying a file mapping.
  */
 enum ApplyOutcome
 {
     /**
-     * File was skipped either preserved or user-modified.
+     * The destination was left unchanged.
      */
     case Skipped;
 
     /**
-     * File was written or overwritten successfully.
+     * The destination was created or rewritten.
      */
     case Written;
 }

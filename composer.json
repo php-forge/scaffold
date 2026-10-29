@@ -22,9 +22,8 @@
     "require": {
         "php": ">=8.3",
         "composer-plugin-api": "^2.3",
-        "composer/composer": "^2.10",
-        "sebastian/diff": "^7.0",
-        "symfony/console": "^7.4"
+        "php-forge/diff": "^0.1",
+        "symfony/console": "^7.4 || ^8.0"
     },
     "bin": [
         "bin/scaffold"
@@ -32,13 +31,14 @@
     "require-dev": {
         "composer/composer": "^2.10",
         "infection/infection": "^0.35",
+        "llm/skills": "^1.15",
         "maglnet/composer-require-checker": "^4.1",
         "php-forge/coding-standard": "^0.3",
         "phpstan/extension-installer": "^1.4",
         "phpstan/phpstan": "^2.2",
         "phpstan/phpstan-strict-rules": "^2.0",
-        "phpunit/phpunit": "^12.5",
-        "xepozz/internal-mocker": "^1.4"
+        "testo/bridge-infection": "^0.1.9",
+        "testo/testo": "^0.10.56"
     },
     "autoload": {
         "psr-4": {
@@ -60,16 +60,21 @@
         "sort-packages": true,
         "allow-plugins": {
             "infection/extension-installer": true,
+            "llm/skills": true,
             "phpstan/extension-installer": true
         }
     },
     "scripts": {
         "check-dependencies": "./vendor/bin/composer-require-checker check",
         "ecs": "./vendor/bin/ecs --fix",
-        "mutation": "./vendor/bin/infection --threads=4 --ignore-msi-with-no-mutations --min-msi=85 --min-covered-msi=85",
-        "mutation-static": "php -d memory_limit=-1 ./vendor/bin/infection --initial-tests-php-options='-d memory_limit=-1' --test-framework-extra-args='-d memory_limit=-1' --threads=4 --ignore-msi-with-no-mutations --min-msi=100 --min-covered-msi=100 --static-analysis-tool=phpstan --static-analysis-tool-options='--memory-limit=-1'",
+        "mutation": [
+            "Composer\\Config::disableProcessTimeout",
+            "@php -d memory_limit=-1 ./vendor/bin/infection"
+        ],
+        "mutation-static": "@mutation --static-analysis-tool=phpstan",
         "rector": "./vendor/bin/rector process",
         "static": "./vendor/bin/phpstan --memory-limit=-1",
-        "tests": "./vendor/bin/phpunit"
+        "tests": "./vendor/bin/testo",
+        "tests-unit": "./vendor/bin/testo --suite=Unit"
     }
 }

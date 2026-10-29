@@ -5,118 +5,112 @@ declare(strict_types=1);
 namespace PHPForge\Scaffold\Tests;
 
 use Composer\Composer;
-use Composer\EventDispatcher\EventDispatcher;
 use Composer\IO\NullIO;
-use Composer\Plugin\{Capable, PluginInterface};
 use PHPForge\Scaffold\{EventSubscriber, Plugin};
-use PHPUnit\Framework\Attributes\{DoesNotPerformAssertions, Group};
-use PHPUnit\Framework\TestCase;
+use PHPForge\Scaffold\Tests\Support\RecordingEventDispatcher;
+use Testo\Assert;
+use Testo\Codecov\Covers;
+use Testo\Test;
+
+use function array_column;
 
 /**
- * Unit tests for {@see Plugin} interface implementations and capabilities.
+ * Unit tests for {@see Plugin} registering and removing its {@see EventSubscriber} on Composer's event dispatcher.
  */
-#[Group('scaffold')]
-final class PluginTest extends TestCase
+#[Test]
+#[Covers(Plugin::class)]
+final class PluginTest
 {
-    public function testActivateRegistersSubscriberOnEventDispatcher(): void
+    /**
+     * Ensures activation registers one event subscriber.
+     */
+    public function activateRegistersAnEventSubscriber(): void
     {
-        $dispatcher = self::createMock(EventDispatcher::class);
+        $dispatcher = new RecordingEventDispatcher();
 
-        $dispatcher
-            ->expects(self::once())
-            ->method('addSubscriber')
-            ->with(self::isInstanceOf(EventSubscriber::class));
+        (new Plugin())->activate(self::composer($dispatcher), new NullIO());
 
-        $composer = self::createStub(Composer::class);
-        $composer->method('getEventDispatcher')->willReturn($dispatcher);
-
-        (new Plugin())->activate($composer, new NullIO());
+        Assert::same(
+            array_column($dispatcher->calls, 0),
+            ['addSubscriber'],
+            "Only 'addSubscriber' must be called.",
+        );
+        Assert::instanceOf(
+            $dispatcher->calls[0][1] ?? null,
+            EventSubscriber::class,
+            'The registered subscriber must be an event subscriber.',
+        );
     }
 
-    public function testDeactivateIsIdempotentWhenCalledTwice(): void
+    /**
+     * Ensures deactivation removes the registered subscriber once, however often it runs.
+     */
+    public function deactivateRemovesTheRegisteredSubscriberOnlyOnce(): void
     {
-        $dispatcher = self::createMock(EventDispatcher::class);
-
-        $dispatcher->expects(self::once())->method('addSubscriber');
-        $dispatcher->expects(self::once())->method('removeListener');
-
-        $composer = self::createStub(Composer::class);
-
-        $composer->method('getEventDispatcher')->willReturn($dispatcher);
-
-        $plugin = new Plugin();
-        $plugin->activate($composer, new NullIO());
-        $plugin->deactivate($composer, new NullIO());
-        $plugin->deactivate($composer, new NullIO());
-    }
-
-    public function testDeactivateIsNoopWhenNotActivated(): void
-    {
-        $dispatcher = self::createMock(EventDispatcher::class);
-
-        $dispatcher->expects(self::never())->method('removeListener');
-
-        $composer = self::createStub(Composer::class);
-
-        $composer->method('getEventDispatcher')->willReturn($dispatcher);
-
-        (new Plugin())->deactivate($composer, new NullIO());
-    }
-
-    public function testDeactivateRemovesSubscriberAfterActivate(): void
-    {
-        $dispatcher = self::createMock(EventDispatcher::class);
-
-        $dispatcher->expects(self::once())->method('addSubscriber');
-        $dispatcher
-            ->expects(self::once())
-            ->method('removeListener')
-            ->with(self::isInstanceOf(EventSubscriber::class));
-
-        $composer = self::createStub(Composer::class);
-
-        $composer->method('getEventDispatcher')->willReturn($dispatcher);
-
+        $dispatcher = new RecordingEventDispatcher();
+        $composer = self::composer($dispatcher);
         $plugin = new Plugin();
 
         $plugin->activate($composer, new NullIO());
         $plugin->deactivate($composer, new NullIO());
-    }
+        $plugin->deactivate($composer, new NullIO());
 
-    public function testGetCapabilitiesReturnsEmptyArray(): void
-    {
-        self::assertCount(
-            0,
-            (new Plugin())->getCapabilities(),
-            'Plugin capabilities array is not empty.',
+        Assert::same(
+            array_column($dispatcher->calls, 0),
+            ['addSubscriber', 'removeListener'],
+            "A second deactivation must not call 'removeListener' again.",
+        );
+        Assert::same(
+            $dispatcher->calls[1][1] ?? null,
+            $dispatcher->calls[0][1] ?? null,
+            'The removed listener must be the registered subscriber.',
         );
     }
 
-    public function testPluginImplementsCapable(): void
+    /**
+     * Ensures deactivation without activation calls no dispatcher method.
+     */
+    public function deactivateWithoutActivationLeavesTheDispatcherUntouched(): void
     {
-        self::assertInstanceOf(
-            Capable::class,
-            new Plugin(),
-            'Plugin does not implement the Capable interface.',
+        $dispatcher = new RecordingEventDispatcher();
+
+        (new Plugin())->deactivate(self::composer($dispatcher), new NullIO());
+
+        Assert::same(
+            $dispatcher->calls,
+            [],
+            'No dispatcher method may be called.',
         );
     }
 
-    public function testPluginImplementsPluginInterface(): void
+    /**
+     * Ensures uninstall leaves the subscriber registered.
+     */
+    public function uninstallKeepsTheSubscriberRegistered(): void
     {
-        self::assertInstanceOf(
-            PluginInterface::class,
-            new Plugin(),
-            'Plugin does not implement the PluginInterface.',
+        $dispatcher = new RecordingEventDispatcher();
+        $composer = self::composer($dispatcher);
+        $plugin = new Plugin();
+
+        $plugin->activate($composer, new NullIO());
+        $plugin->uninstall($composer, new NullIO());
+
+        Assert::same(
+            array_column($dispatcher->calls, 0),
+            ['addSubscriber'],
+            "Uninstall must not call 'removeListener'.",
         );
     }
 
-    #[DoesNotPerformAssertions]
-    public function testUninstallIsNoop(): void
+    /**
+     * Returns a Composer instance that uses `$dispatcher`.
+     */
+    private static function composer(RecordingEventDispatcher $dispatcher): Composer
     {
-        $composer = self::createStub(Composer::class);
+        $composer = new Composer();
 
-        // `uninstall()` is an explicit no-op per PluginInterface; this test guards against accidentally adding behavior
-        // that would throw during `composer remove`.
-        (new Plugin())->uninstall($composer, new NullIO());
+        $composer->setEventDispatcher($dispatcher);
+
+        return $composer;
     }
 }

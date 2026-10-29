@@ -5,138 +5,87 @@ declare(strict_types=1);
 namespace PHPForge\Scaffold\Tests\Console\Command;
 
 use PHPForge\Scaffold\Console\Command\ProvidersCommand;
-use PHPForge\Scaffold\Scaffold\Lock\LockFile;
-use PHPForge\Scaffold\Tests\Support\TempDirectoryTrait;
-use PHPUnit\Framework\Attributes\Group;
-use PHPUnit\Framework\TestCase;
-use Symfony\Component\Console\Command\Command;
+use PHPForge\Scaffold\Services\ProvidersService;
+use PHPForge\Scaffold\Tests\Support\{BufferedOutputWriter, InspectionProject, TempDirectoryTrait};
 use Symfony\Component\Console\Tester\CommandTester;
-use Xepozz\InternalMocker\MockerState;
+use Testo\Assert;
+use Testo\Lifecycle\{AfterTest, BeforeTest};
+use Testo\Test;
 
 use function chdir;
 use function getcwd;
 use function is_dir;
+use function mkdir;
 
 /**
- * Unit tests for the Symfony Console {@see ProvidersCommand} verifying the provider summary output.
+ * Functional tests for the Symfony Console {@see ProvidersCommand} running the providers service on the project root.
  */
-#[Group('scaffold')]
-#[Group('console-command')]
-final class ProvidersCommandTest extends TestCase
+#[Test]
+final class ProvidersCommandTest
 {
     use TempDirectoryTrait;
 
+    /**
+     * Working directory before the test, restored after it.
+     */
     private string $originalCwd = '';
 
-    public function testExecuteListsProvidersWithFileCounts(): void
+    /**
+     * Ensures the command prints the provider summary of the project root and exits with `0`.
+     */
+    public function printsTheProviderSummaryOfTheProjectRoot(): void
     {
-        (new LockFile($this->tempDir))->write(
-            [
-                'providers' => [],
-                'files' => [
-                    'a.txt' => [
-                        'hash' => 'sha256:a',
-                        'provider' => 'pkg/a',
-                        'source' => 'stubs/a.txt',
-                        'mode' => 'replace',
-                    ],
-                    'b.txt' => [
-                        'hash' => 'sha256:b',
-                        'provider' => 'pkg/a',
-                        'source' => 'stubs/b.txt',
-                        'mode' => 'replace',
-                    ],
-                    'c.txt' => [
-                        'hash' => 'sha256:c',
-                        'provider' => 'pkg/b',
-                        'source' => 'stubs/c.txt',
-                        'mode' => 'preserve',
-                    ],
-                ],
-            ],
-        );
+        $expected = new BufferedOutputWriter();
 
-        $tester = new CommandTester(new ProvidersCommand());
-
-        $exitCode = $tester->execute([]);
-        $display = $tester->getDisplay();
-
-        self::assertSame(
-            0,
-            $exitCode,
-            'Providers command must return a success exit code when providers are tracked.',
-        );
-        self::assertMatchesRegularExpression(
-            '#pkg/a\s+2\b#',
-            $display,
-            "Provider 'pkg/a' must be rendered with its file count of '2' on the same row.",
-        );
-        self::assertMatchesRegularExpression(
-            '#pkg/b\s+1\b#',
-            $display,
-            "Provider 'pkg/b' must be rendered with its file count of '1' on the same row.",
-        );
-    }
-
-    public function testExecutePrintsEmptyMessageWhenNoProvidersTracked(): void
-    {
-        (new LockFile($this->tempDir))->write(['providers' => [], 'files' => []]);
+        (new ProvidersService())->run($this->tempDir, $expected);
 
         $tester = new CommandTester(new ProvidersCommand());
 
         $exitCode = $tester->execute([]);
 
-        self::assertSame(
-            0,
+        Assert::same(
             $exitCode,
-            'Providers command must return success exit code when no providers are tracked.',
+            0,
+            "Exit code must be '0'.",
         );
-        self::assertStringContainsString(
-            'No providers tracked in scaffold-lock.json',
+        Assert::same(
             $tester->getDisplay(),
-            'Providers command must indicate when no providers are tracked.',
+            $expected->stdoutBuffer,
+            'Output must be the provider summary of the project root.',
         );
     }
 
-    public function testExecuteReturnsFailureWhenGetcwdFails(): void
-    {
-        MockerState::addCondition(
-            'PHPForge\\Scaffold\\Console\\Command',
-            'getcwd',
-            [],
-            false,
-            default: true,
-        );
-
-        $tester = new CommandTester(new ProvidersCommand());
-
-        self::assertSame(
-            Command::FAILURE,
-            $tester->execute([]),
-            'Providers command must return failure exit code when getcwd fails.',
-        );
-        self::assertStringContainsString(
-            'Unable to determine current working directory',
-            $tester->getDisplay(),
-            'Providers command must indicate when it cannot determine the current working directory.',
-        );
-    }
-
-    protected function setUp(): void
-    {
-        $this->originalCwd = (string) getcwd();
-
-        $this->setUpTempDirectory();
-
-        chdir($this->tempDir);
-    }
-
-    protected function tearDown(): void
+    /**
+     * Restores the working directory of the runner.
+     */
+    #[AfterTest]
+    public function restoreWorkingDirectory(): void
     {
         if ($this->originalCwd !== '' && is_dir($this->originalCwd)) {
             chdir($this->originalCwd);
         }
+    }
 
-        $this->tearDownTempDirectory();
+    /**
+     * Saves the working directory, seeds files of two providers and enters a directory below the project root.
+     */
+    #[BeforeTest(priority: -10)]
+    public function setUpProject(): void
+    {
+        $this->originalCwd = (string) getcwd();
+
+        (new InspectionProject($this->tempDir))
+            ->composer(['pkg/a', 'pkg/b'])
+            ->provider('pkg/a', ['a.txt' => "a\n", 'b.txt' => "b\n"])
+            ->provider('pkg/b', ['c.txt' => "c\n"])
+            ->file('a.txt', "a\n")
+            ->file('b.txt', "b\n")
+            ->file('c.txt', "c\n")
+            ->track('a.txt', 'pkg/a')
+            ->track('b.txt', 'pkg/a')
+            ->track('c.txt', 'pkg/b', 'preserve');
+
+        mkdir("{$this->tempDir}/src");
+        chdir("{$this->tempDir}/src");
     }
 }

@@ -4,146 +4,230 @@ declare(strict_types=1);
 
 namespace PHPForge\Scaffold\Services;
 
-use PHPForge\Scaffold\Console\{DiffColorizer, ExitCode, OutputWriter};
+use PHPForge\Diff\UnifiedDiffRenderer;
+use PHPForge\Scaffold\Config\ProjectContext;
+use PHPForge\Scaffold\Console\{DiffColorizer, ExitCode, Message, OutputWriter};
+use PHPForge\Scaffold\Scaffold\ExpectedState;
 use PHPForge\Scaffold\Scaffold\Lock\LockFile;
-use PHPForge\Scaffold\Scaffold\PathResolver;
 use PHPForge\Scaffold\Security\PathValidator;
 use RuntimeException;
-use SebastianBergmann\Diff\Differ;
-use SebastianBergmann\Diff\Output\StrictUnifiedDiffOutputBuilder;
-
-use function is_file;
-use function preg_replace;
-use function sprintf;
-use function str_ends_with;
-use function substr;
 
 /**
- * Computes and renders a git-style unified diff between a scaffold provider stub and the current on-disk file.
+ * Renders Git-compatible unified diffs of what applying the provider would change in tracked files.
  */
 final class DiffService
 {
     /**
-     * Builds a git-style unified diff between `$stubContent` and `$currentContent`.
+     * Writes the header and diff of one preview, `no changes`, or the line-ending notice.
      *
-     * Renders `--- a/$file` and `+++ b/$file` headers followed by `@@ -l,c +l,c @@` hunks with three context lines.
-     * Lines present only in the stub are prefixed with `-`, and lines present only in the current file with `+`.
-     *
-     * @param string $stubContent Content from the provider stub file.
-     * @param string $currentContent Content of the current on-disk file.
-     * @param string $file Destination path used in the `a/`–`b/` header labels.
-     *
-     * @return string Unified diff output without a trailing newline. Empty string if the contents are identical.
-     */
-    public function buildDiff(string $stubContent, string $currentContent, string $file): string
-    {
-        $stubContent = (string) preg_replace('/\r\n|\r/', "\n", $stubContent);
-        $currentContent = (string) preg_replace('/\r\n|\r/', "\n", $currentContent);
-
-        // The builder defaults match git: three context lines and collapsed single-line ranges. It returns an empty
-        // string for identical contents, so only the header labels need configuring.
-        $differ = new Differ(
-            new StrictUnifiedDiffOutputBuilder(
-                [
-                    'fromFile' => 'a/' . $file,
-                    'toFile' => 'b/' . $file,
-                ],
-            ),
-        );
-
-        $diff = $differ->diff($stubContent, $currentContent);
-
-        // The builder always terminates its output with exactly one newline; strip it because 'writeStdout()' appends
-        // the final newline itself.
-        return str_ends_with($diff, "\n") ? substr($diff, 0, -1) : $diff;
-    }
-
-    /**
-     * Renders the diff for `$file` tracked in `scaffold-lock.json`.
-     *
-     * @param string $projectRoot Absolute path to the project root.
-     * @param string $vendorDir Absolute path to the Composer vendor directory.
-     * @param string $file Destination path as recorded in `scaffold-lock.json`.
+     * @param ApplyPreview $preview Preview of the destination to render.
      * @param OutputWriter $out Output sink.
      * @param bool $decorated Whether to wrap the diff lines in ANSI color escape codes.
      *
-     * @return int `0` on success, non-zero on unsafe lock entry, missing stub, or I/O failure.
+     * @return bool `true` when applying the mapping would create or change the destination, `false` otherwise.
+     */
+    public function renderPreview(ApplyPreview $preview, OutputWriter $out, bool $decorated = false): bool
+    {
+        $file = $preview->mapping->destination;
+
+        if (!$preview->changes()) {
+            $out->writeStdout(
+                Message::DIFF_NO_CHANGES->getMessage($file),
+            );
+
+            return false;
+        }
+
+        if ($preview->differsOnlyInLineEndings()) {
+            $out->writeStdout(
+                Message::DIFF_LINE_ENDINGS_ONLY->getMessage($file),
+            );
+
+            return true;
+        }
+
+        $suffix = match (true) {
+            $preview->userModified => Message::FRAGMENT_USER_MODIFIED_PREVIEW->getMessage(),
+            $preview->informational => Message::FRAGMENT_PRESERVE_PREVIEW->getMessage(),
+            default => '',
+        };
+
+        $out->writeStdout(
+            Message::DIFF_PREVIEW_HEADER->getMessage(
+                $file,
+                $preview->mapping->mode->value,
+                $preview->mapping->providerName,
+                $suffix,
+            ),
+        );
+
+        $diff = (new UnifiedDiffRenderer())
+            ->render($preview->current, $preview->proposed, 'a/' . $file, 'b/' . $file);
+
+        if ($diff === '') {
+            $out->writeStdout(
+                Message::DIFF_CREATED_EMPTY->getMessage($file),
+            );
+
+            return true;
+        }
+
+        $out->writeStdout(
+            $decorated ? (new DiffColorizer())->colorize($diff) : $diff,
+        );
+
+        return true;
+    }
+
+    /**
+     * Renders what applying the provider would change in `$file`, or in every tracked, non-ejected file when `$file`
+     * is `null`, against the current disk content; orphans are reported, not diffed.
+     *
+     * @param ProjectContext $context Project to inspect.
+     * @param OutputWriter $out Output sink.
+     * @param string|null $file Destination path as recorded in `scaffold-lock.json`, or `null` for every file.
+     * @param bool $decorated Whether to wrap the diff lines in ANSI color escape codes.
+     * @param bool $exitCode Whether to return `1` when applying the provider would change any file.
+     *
+     * @throws RuntimeException when the lock file cannot be read.
+     *
+     * @return int `1` when the file is not tracked, an entry is unsafe, its provider is not allowed, or a file cannot
+     * be read, or with `$exitCode` when any file would change; `0` otherwise.
      */
     public function run(
-        string $projectRoot,
-        string $vendorDir,
-        string $file,
+        ProjectContext $context,
         OutputWriter $out,
+        string|null $file = null,
         bool $decorated = false,
+        bool $exitCode = false,
     ): int {
-        $data = (new LockFile($projectRoot))->read();
+        $data = (new LockFile($context->projectRoot))->read();
 
-        $entry = $data['files'][$file] ?? null;
-
-        if ($entry === null) {
-            $out->writeStderr(sprintf('[scaffold] "%s" is not tracked in scaffold-lock.json.', $file));
+        if ($file !== null && !isset($data['files'][$file])) {
+            $out->writeStderr(
+                Message::COMMAND_FILE_NOT_TRACKED->getMessage($file),
+            );
 
             return ExitCode::Error->value;
         }
 
-        $resolved = PathResolver::resolveProviderRoot(
-            $vendorDir,
-            $entry['provider'],
-            $data['providers'][$entry['provider']] ?? null,
-            $projectRoot,
-        );
+        $expected = ExpectedState::build($context, $data['providers']);
 
-        $providerRoot = $resolved['root'];
-
-        if ($resolved['warning'] !== null) {
-            $out->writeStderr($resolved['warning']);
+        foreach ($expected->warnings as $warning) {
+            $out->writeStderr($warning);
         }
 
         $validator = new PathValidator();
+        $previewer = new ApplyPreviewer();
 
-        try {
-            $validator->validateDestination($file, $projectRoot);
-            $validator->validateSource($entry['source'], $providerRoot);
-        } catch (RuntimeException $e) {
-            $out->writeStderr(sprintf('[scaffold] Unsafe lock entry for "%s": %s', $file, $e->getMessage()));
+        $errors = 0;
+        $changes = 0;
 
-            return ExitCode::Error->value;
-        }
+        foreach ($data['files'] as $destination => $entry) {
+            // PHP turns integer-like destinations ("123") into integer array keys.
+            $destination = (string) $destination;
 
-        $currentPath = PathResolver::destination($projectRoot, $file);
-
-        if (is_file($currentPath)) {
-            $rawCurrent = file_get_contents($currentPath);
-
-            if ($rawCurrent === false) {
-                $out->writeStderr(sprintf('[scaffold] Could not read current file "%s".', $currentPath));
-
-                return ExitCode::Error->value;
+            if ($file !== null && $destination !== $file) {
+                continue;
             }
 
-            $currentContent = $rawCurrent;
-        } else {
-            $currentContent = '';
+            if (($entry['ejected'] ?? false) === true) {
+                if ($file !== null) {
+                    $out->writeStdout(
+                        Message::DIFF_EJECTED->getMessage($file),
+                    );
+                }
+
+                continue;
+            }
+
+            try {
+                $validator->validateDestination($destination, $context->projectRoot);
+
+                $mapping = $expected->mapping($destination);
+
+                if ($mapping === null) {
+                    if ($this->reportUnmapped($destination, $entry['provider'], $context, $expected, $out)) {
+                        $errors++;
+                    }
+
+                    continue;
+                }
+
+                $validator->validateSource($mapping->source, $mapping->providerPath);
+            } catch (RuntimeException $e) {
+                $out->writeStderr(
+                    Message::COMMAND_UNSAFE_ENTRY->getMessage($destination, $e->getMessage()),
+                );
+
+                $errors++;
+
+                continue;
+            }
+
+            try {
+                $preview = $previewer->preview($mapping, $context->projectRoot, $entry);
+            } catch (RuntimeException $e) {
+                $out->writeStderr(
+                    Message::COMMAND_FILE_ERROR->getMessage($destination, $e->getMessage()),
+                );
+
+                $errors++;
+
+                continue;
+            }
+
+            if ($this->renderPreview($preview, $out, $decorated)) {
+                $changes++;
+            }
         }
 
-        $stubPath = PathResolver::source($providerRoot, $entry['source']);
-
-        if (!is_file($stubPath)) {
-            $out->writeStderr(sprintf('[scaffold] Stub not found: "%s".', $stubPath));
-
+        if ($errors > 0) {
             return ExitCode::Error->value;
         }
 
-        $stubContent = (string) file_get_contents($stubPath);
+        return $exitCode && $changes > 0 ? ExitCode::Error->value : ExitCode::Ok->value;
+    }
 
-        $diff = $this->buildDiff($stubContent, $currentContent, $file);
+    /**
+     * Reports a tracked file that no allowed and installed provider ships.
+     *
+     * @param string $destination Destination path as recorded in `scaffold-lock.json`.
+     * @param string $provider Provider recorded in the lock entry.
+     * @param ProjectContext $context Project the entry belongs to.
+     * @param ExpectedState $expected Expected mappings, used to detect a provider whose manifest failed to load.
+     * @param OutputWriter $out Output sink.
+     *
+     * @return bool `true` when the provider is not allowed or its manifest could not be loaded, `false` when the entry
+     * is an orphan.
+     */
+    private function reportUnmapped(
+        string $destination,
+        string $provider,
+        ProjectContext $context,
+        ExpectedState $expected,
+        OutputWriter $out,
+    ): bool {
+        if (!$context->config->isAllowed($provider)) {
+            $out->writeStderr(
+                Message::COMMAND_PROVIDER_NOT_ALLOWED->getMessage($destination, $provider),
+            );
 
-        if ($diff === '') {
-            $out->writeStdout('[scaffold] No differences found.');
-        } else {
-            $out->writeStdout($decorated ? (new DiffColorizer())->colorize($diff) : $diff);
+            return true;
         }
 
-        return ExitCode::Ok->value;
+        if ($expected->hasFailed($provider)) {
+            $out->writeStderr(
+                Message::DIFF_MANIFEST_NOT_LOADED->getMessage($destination, $provider),
+            );
+
+            return true;
+        }
+
+        $out->writeStdout(
+            Message::DIFF_ORPHAN->getMessage($destination),
+        );
+
+        return false;
     }
 }

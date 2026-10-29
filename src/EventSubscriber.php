@@ -5,17 +5,17 @@ declare(strict_types=1);
 namespace PHPForge\Scaffold;
 
 use Composer\EventDispatcher\EventSubscriberInterface;
-use Composer\IO\IOInterface;
 use Composer\Script\{Event, ScriptEvents};
+use PHPForge\Scaffold\Config\ProjectConfig;
+use PHPForge\Scaffold\Console\{ComposerIoWriter, Message as ConsoleMessage};
+use PHPForge\Scaffold\Exception\{Message, ScaffoldException};
 use PHPForge\Scaffold\Manifest\{ManifestExpander, ManifestLoader, ManifestSchema};
-use PHPForge\Scaffold\Scaffold\{Applier, Scaffolder};
-use PHPForge\Scaffold\Scaffold\Lock\{Hasher, LockFile};
-use PHPForge\Scaffold\Security\{PackageAllowlist, PathValidator};
+use PHPForge\Scaffold\Scaffold\{FileApplier, PathResolver, ScaffoldSummary, Scaffolder};
+use PHPForge\Scaffold\Scaffold\Lock\LockFile;
+use PHPForge\Scaffold\Security\PathValidator;
 use Throwable;
 
-use function is_array;
-use function is_string;
-use function sprintf;
+use function dirname;
 
 /**
  * Listens to Composer script events and triggers the scaffold workflow.
@@ -23,17 +23,15 @@ use function sprintf;
 final class EventSubscriber implements EventSubscriberInterface
 {
     /**
-     * Set to `true` after `onPostInstall` executes in the current process.
-     *
-     * During `composer create-project`, Composer fires `post-install-cmd` before `post-create-project-cmd` within the
-     * same process. The install run applies all scaffold entries (including `append`/`prepend`) because the lock is
-     * empty. If the create-project handler were also to run a full scaffold, those entries would be re-applied and
-     * duplicated. This flag prevents that second run.
+     * Whether `post-install-cmd` or `post-update-cmd` fired in this process, so `post-create-project-cmd` does not run
+     * the workflow again.
      */
-    private static bool $installScaffoldRan = false;
+    private static bool $scaffoldRan = false;
 
     /**
-     * @return array<string, string>
+     * Returns the Composer script events handled by this subscriber.
+     *
+     * @return array<string, string> Event name => handler method.
      */
     public static function getSubscribedEvents(): array
     {
@@ -45,141 +43,62 @@ final class EventSubscriber implements EventSubscriberInterface
     }
 
     /**
-     * Handles the post-create-project event to perform a full scaffold.
+     * Runs the scaffold workflow for `post-create-project-cmd`, unless `post-install-cmd` or `post-update-cmd` already
+     * fired in this process.
      *
-     * Skipped when `post-install-cmd` already ran in this process (i.e., during `composer create-project`), since the
-     * partial install scaffold with an empty lock is equivalent to a full scaffold.
-     *
-     * @param Event $event Composer event object containing context for the operation.
+     * @param Event $event The Composer event object.
      */
     public function onPostCreateProject(Event $event): void
     {
-        if (self::$installScaffoldRan) {
+        if (self::$scaffoldRan) {
             return;
         }
 
-        $this->runScaffold($event, fullScaffold: true);
+        $this->runScaffold($event);
     }
 
     /**
-     * Handles the post-install event to perform a partial scaffold.
+     * Runs the scaffold workflow for `post-install-cmd`.
      *
-     * @param Event $event Composer event object containing context for the operation.
+     * @param Event $event The Composer event object.
      */
     public function onPostInstall(Event $event): void
     {
-        self::$installScaffoldRan = true;
+        self::$scaffoldRan = true;
 
-        $this->runScaffold($event, fullScaffold: false);
+        $this->runScaffold($event);
     }
 
     /**
-     * Handles the post-update event to perform a partial scaffold.
+     * Runs the scaffold workflow for `post-update-cmd`.
      *
-     * @param Event $event Composer event object containing context for the operation.
+     * @param Event $event The Composer event object.
      */
     public function onPostUpdate(Event $event): void
     {
-        $this->runScaffold($event, fullScaffold: false);
+        self::$scaffoldRan = true;
+
+        $this->runScaffold($event);
     }
 
     /**
-     * Builds the Scaffolder instance with the necessary components.
+     * Runs the scaffold workflow for the root package unless `extra.scaffold.auto` is `false`, ends with a summary line
+     * when a file was written or something needs attention, and fails the Composer command on errors.
      *
-     * @param list<string> $allowedPackages List of package names that are allowed to be scaffolded, extracted from
-     * `composer.json`.
-     * @param string $projectRoot Absolute path to the project root.
-     * @param IOInterface $io Composer IO interface for user interaction.
+     * @param Event $event Composer script event that provides the Composer instance and IO.
      *
-     * @return Scaffolder Configured Scaffolder instance.
+     * @throws ScaffoldException after the messages and the summary line are written, when the lock file cannot be read
+     * or written, the manifest of an allowed provider cannot be loaded, or a file fails to apply.
      */
-    private function buildScaffolder(array $allowedPackages, string $projectRoot, IOInterface $io): Scaffolder
-    {
-        return new Scaffolder(
-            new ManifestLoader(new ManifestSchema(), new ManifestExpander()),
-            new Applier(new PackageAllowlist($allowedPackages), new PathValidator(), new Hasher(), $io),
-            new LockFile($projectRoot),
-            $io,
-        );
-    }
-
-    /**
-     * Extracts the list of allowed packages from the `extra` section of `composer.json`.
-     *
-     * @param array<mixed> $extra  `extra` section from the root package's `composer.json`, which may contain scaffold
-     * configuration.
-     * @param IOInterface $io Composer IO interface for logging warnings about invalid configuration entries.
-     *
-     * @return list<string> List of allowed package names that can be scaffolded. If the configuration is missing or
-     * invalid, an empty list is returned.
-     */
-    private function extractAllowedPackages(array $extra, IOInterface $io): array
-    {
-        $scaffoldConfig = $extra['scaffold'] ?? null;
-
-        if (!is_array($scaffoldConfig)) {
-            return [];
-        }
-
-        $rawAllowed = $scaffoldConfig['allowed-packages'] ?? null;
-
-        if (!is_array($rawAllowed)) {
-            return [];
-        }
-
-        $allowed = [];
-
-        foreach ($rawAllowed as $item) {
-            if (is_string($item)) {
-                $allowed[] = $item;
-            } else {
-                $io->writeError(
-                    '[scaffold] Non-string entry in allowed-packages ignored.',
-                );
-            }
-        }
-
-        return $allowed;
-    }
-
-    /**
-     * Reads the consumer's `extra.scaffold.auto` flag.
-     *
-     * Auto-trigger is enabled by default. Only an explicit `false` disables the post-install/post-update/
-     * post-create-project hooks, in which case the consumer must invoke `vendor/bin/scaffold` manually to apply
-     * provider templates. Non-boolean values are treated as enabled to avoid silent disable on typo.
-     *
-     * @param array<mixed> $extra `extra` section from the root package's composer.json.
-     *
-     * @return bool `true` when auto-trigger is enabled, `false` only when explicitly disabled by the consumer.
-     */
-    private function isAutoEnabled(array $extra): bool
-    {
-        $scaffold = $extra['scaffold'] ?? null;
-
-        if (!is_array($scaffold)) {
-            return true;
-        }
-
-        return ($scaffold['auto'] ?? null) !== false;
-    }
-
-    /**
-     * Executes the scaffold process based on the given Composer event and scaffold type.
-     *
-     * @param Event $event Composer event object containing context for the operation.
-     * @param bool $fullScaffold Whether to perform a full scaffold (`true` for post-create-project) or a partial
-     * scaffold (`true` for post-install and post-update).
-     */
-    private function runScaffold(Event $event, bool $fullScaffold): void
+    private function runScaffold(Event $event): void
     {
         $composer = $event->getComposer();
         $io = $event->getIO();
 
-        if (!$this->isAutoEnabled($composer->getPackage()->getExtra())) {
-            $io->write(
-                '[scaffold] Auto-scaffold disabled via "extra.scaffold.auto"; run "vendor/bin/scaffold" manually.',
-            );
+        $config = ProjectConfig::fromExtra($composer->getPackage()->getExtra());
+
+        if (!$config->auto) {
+            $io->write(ConsoleMessage::SCAFFOLD_AUTO_DISABLED->getMessage());
 
             return;
         }
@@ -187,24 +106,29 @@ final class EventSubscriber implements EventSubscriberInterface
         $vendorDirRaw = $composer->getConfig()->get('vendor-dir');
 
         if ($vendorDirRaw === '') {
-            $io->writeError(
-                '[scaffold] Unable to resolve vendor-dir from Composer config; aborting scaffold.',
-            );
+            $io->writeError(ConsoleMessage::SCAFFOLD_VENDOR_DIR_UNRESOLVABLE->getMessage());
 
             return;
         }
 
-        $vendorDirResolved = realpath($vendorDirRaw);
+        $vendorDir = PathResolver::realpathOrFallback($vendorDirRaw);
+        $projectRoot = PathResolver::realpathOrFallback(dirname($composer->getConfig()->getConfigSource()->getName()));
 
-        $vendorDir = $vendorDirResolved !== false ? $vendorDirResolved : $vendorDirRaw;
+        for ($i = 0; $i < $config->ignoredEntries; $i++) {
+            $io->writeError(ConsoleMessage::SCAFFOLD_ALLOWED_ENTRY_IGNORED->getMessage());
+        }
 
-        $projectRootRaw = dirname($composer->getConfig()->getConfigSource()->getName());
-        $projectRootResolved = realpath($projectRootRaw);
+        $out = new ComposerIoWriter($io);
+        $summary = new ScaffoldSummary();
 
-        $projectRoot = $projectRootResolved !== false ? $projectRootResolved : $projectRootRaw;
+        $scaffolder = new Scaffolder(
+            new ManifestLoader(new ManifestSchema(), new ManifestExpander()),
+            new FileApplier($config, new PathValidator(), $out),
+            new LockFile($projectRoot),
+            $out,
+            $summary,
+        );
 
-        $allowedPackages = $this->extractAllowedPackages($composer->getPackage()->getExtra(), $io);
-        $scaffolder = $this->buildScaffolder($allowedPackages, $projectRoot, $io);
         $localRepo = $composer->getRepositoryManager()->getLocalRepository();
         $installationManager = $composer->getInstallationManager();
 
@@ -218,18 +142,53 @@ final class EventSubscriber implements EventSubscriberInterface
             }
         }
 
+        $failure = null;
+
         try {
             $scaffolder->scaffold(
-                $composer->getPackage(),
+                $config,
                 $localRepo->getPackages(),
                 $projectRoot,
                 $vendorDir,
-                $fullScaffold,
                 $installPaths,
             );
+        } catch (ScaffoldException $e) {
+            // The scaffolder already wrote the message.
+            $failure = $e;
         } catch (Throwable $e) {
-            $io->writeError(
-                sprintf('[scaffold] Scaffolding aborted: %s', $e->getMessage()),
+            $message = Message::SCAFFOLD_ABORTED->getMessage($e->getMessage());
+
+            $io->writeError($message);
+
+            $summary->errors++;
+
+            $failure = new ScaffoldException(
+                $message,
+                0,
+                $e,
+            );
+        }
+
+        $line = $summary->line();
+
+        if ($line !== null) {
+            $io->write($line);
+        }
+
+        if ($failure !== null) {
+            throw $failure;
+        }
+
+        if ($summary->errors > 0) {
+            throw new ScaffoldException(
+                Message::SCAFFOLD_FILES_FAILED->getMessage(
+                    $summary->errors,
+                    Message::plural(
+                        $summary->errors,
+                        Message::SCAFFOLD_FRAGMENT_FAILED_FILE,
+                        Message::SCAFFOLD_FRAGMENT_FAILED_FILES,
+                    ),
+                ),
             );
         }
     }

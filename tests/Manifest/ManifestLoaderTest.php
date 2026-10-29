@@ -4,368 +4,212 @@ declare(strict_types=1);
 
 namespace PHPForge\Scaffold\Tests\Manifest;
 
-use Composer\Package\PackageInterface;
-use JsonException;
-use PHPForge\Scaffold\Manifest\{FileMode, ManifestExpander, ManifestLoader, ManifestSchema};
+use Exception;
+use PHPForge\Scaffold\Exception\Message;
+use PHPForge\Scaffold\Manifest\{FileMapping, FileMode, ManifestExpander, ManifestLoader, ManifestSchema};
+use PHPForge\Scaffold\Tests\Provider\ManifestLoaderProvider;
 use PHPForge\Scaffold\Tests\Support\TempDirectoryTrait;
-use PHPUnit\Framework\Attributes\Group;
-use PHPUnit\Framework\TestCase;
 use RuntimeException;
-use Xepozz\InternalMocker\MockerState;
+use Testo\Assert;
+use Testo\Codecov\Covers;
+use Testo\Data\{DataProvider, DataSet};
+use Testo\Expect;
+use Testo\Test;
 
+use function dirname;
 use function file_put_contents;
-use function json_encode;
 
 /**
- * Unit tests for {@see ManifestLoader} inline and external manifest loading with the `copy`/`exclude`/`modes` schema.
+ * Unit tests for {@see ManifestLoader} reading the inline or external provider manifest, from the `extra` section or
+ * from the provider `composer.json`, and expanding it into file mappings.
+ *
+ * {@see ManifestLoaderProvider} for test case data providers.
  */
-#[Group('scaffold')]
-#[Group('manifest')]
-final class ManifestLoaderTest extends TestCase
+#[Test]
+#[Covers(ManifestLoader::class)]
+final class ManifestLoaderTest
 {
     use TempDirectoryTrait;
 
-    public function testLoadAcceptsExternalManifestPathContainingColonInNonLeadingPosition(): void
+    /**
+     * Ensures an external manifest named in `composer.json` next to consumer keys is read from the provider root.
+     */
+    public function expandsTheExternalManifestOfComposerJson(): void
     {
-        // Pins the '^' anchor in '/^[A-Za-z]:/': non-leading colons (stream wrappers, namespaces) must not be rejected.
-        $manifest = ['copy' => ['src']];
+        // Shape of 'php-forge/coding-standard': a provider that is also a consumer of 'php-forge/baseline'.
+        $this->seed('src/Foo.php');
+        $this->seed('stubs/ecs.php');
+        $this->seed('config/params.php');
+        $this->seed('config/web.php');
+        $this->seed(
+            'composer.json',
+            '{"extra": {"scaffold": {"manifest": "scaffold.json", "allowed-packages": ["php-forge/baseline"]}}}',
+        );
+        $this->seed(
+            'scaffold.json',
+            '{"copy": ["src", {"from": "stubs/ecs.php", "to": "ecs.php"}, "config"], "exclude": ["config/web.php"], '
+            . '"modes": {"config/*.php": "preserve", "ecs.php": "append"}}',
+        );
 
-        $this->seedFile('src/Foo.php');
-        $this->ensureTestDirectory("{$this->tempDir}/subdir");
+        $provider = 'php-forge/coding-standard';
 
-        file_put_contents("{$this->tempDir}/subdir/a:b.json", (string) json_encode($manifest));
-
-        $package = self::createStub(PackageInterface::class);
-
-        $package->method('getExtra')->willReturn(['scaffold' => ['manifest' => 'subdir/a:b.json']]);
-        $package->method('getName')->willReturn('pkg/example');
-
-        $result = $this->loader()->load($package, $this->tempDir);
-
-        self::assertCount(
-            1,
-            $result,
-            "A manifest path whose non-leading segment contains '[A-Za-z]:' must load; the drive-letter check fires only on leading.",
+        Assert::equals(
+            $this->loader()->loadFromPath($provider, $this->tempDir),
+            [
+                $this->mapping('src/Foo.php', 'src/Foo.php', FileMode::Replace, $provider),
+                $this->mapping('ecs.php', 'stubs/ecs.php', FileMode::Append, $provider),
+                $this->mapping('config/params.php', 'config/params.php', FileMode::Preserve, $provider),
+            ],
+            "Every key of the external manifest must apply to the mappings of 'php-forge/coding-standard'.",
         );
     }
 
-    public function testLoadExpandsInlineManifest(): void
+    /**
+     * Ensures an inline manifest is expanded even when the block also carries the consumer keys.
+     */
+    public function expandsTheInlineManifestNextToConsumerKeys(): void
     {
-        $this->seedFile('src/Foo.php');
-        $this->seedFile('config/params.php');
+        $this->seed('src/Foo.php');
+        $this->seed('config/params.php');
 
-        $package = self::createStub(PackageInterface::class);
-
-        $package
-            ->method('getExtra')
-            ->willReturn(
+        Assert::equals(
+            $this->loader()->loadFromExtra(
                 [
                     'scaffold' => [
                         'copy' => ['src', 'config'],
                         'modes' => ['config/*.php' => 'preserve'],
+                        'allowed-packages' => ['php-forge/baseline'],
+                        'auto' => false,
                     ],
                 ],
-            );
-        $package->method('getName')->willReturn('pkg/example');
-
-        $result = $this->loader()->load($package, $this->tempDir);
-
-        self::assertCount(
-            2,
-            $result,
-            'Inline manifest must produce one FileMapping per expanded file.',
-        );
-
-        $modes = [];
-
-        foreach ($result as $mapping) {
-            $modes[$mapping->destination] = $mapping->mode;
-
-            self::assertSame(
                 'pkg/example',
-                $mapping->providerName,
-                'Every FileMapping must be attributed to the provider name.',
-            );
-        }
-
-        self::assertSame(
-            FileMode::Preserve,
-            $modes['config/params.php'] ?? null,
-            "'config/*.php' glob must resolve to FileMode::Preserve.",
+                $this->tempDir,
+            ),
+            [
+                $this->mapping('src/Foo.php', 'src/Foo.php', FileMode::Replace, 'pkg/example'),
+                $this->mapping('config/params.php', 'config/params.php', FileMode::Preserve, 'pkg/example'),
+            ],
+            'Inline manifest must expand into one mapping per file of the provider.',
         );
-        self::assertSame(
-            FileMode::Replace,
-            $modes['src/Foo.php'] ?? null,
-            'Files with no matching mode must default to FileMode::Replace.',
-        );
-    }
-
-    public function testLoadExternalManifestPreservesEveryDeclaredKey(): void
-    {
-        $this->seedFile('src/Foo.php');
-        $this->seedFile('config/params.php');
-        $this->seedFile('config/web.php');
-
-        $manifest = [
-            'copy' => ['src', 'config'],
-            'exclude' => ['config/secrets.php'],
-            'modes' => ['config/*.php' => 'preserve'],
-        ];
-
-        file_put_contents("{$this->tempDir}/scaffold.json", (string) json_encode($manifest));
-
-        $package = self::createStub(PackageInterface::class);
-
-        $package
-            ->method('getExtra')
-            ->willReturn(['scaffold' => ['manifest' => 'scaffold.json']]);
-        $package->method('getName')->willReturn('pkg/example');
-
-        $result = $this->loader()->load($package, $this->tempDir);
-
-        $destinations = [];
-
-        foreach ($result as $mapping) {
-            $destinations[$mapping->destination] = $mapping->mode;
-        }
-
-        self::assertArrayHasKey(
-            'src/Foo.php',
-            $destinations,
-            "The 'src' copy root must survive decoding; losing the second copy entry would hide this destination.",
-        );
-        self::assertArrayHasKey(
-            'config/params.php',
-            $destinations,
-            "The 'config' copy root must survive decoding; it is declared as the second entry of 'copy[]'.",
-        );
-        self::assertSame(
-            FileMode::Preserve,
-            $destinations['config/params.php'] ?? null,
-            "The 'modes{}' key must survive decoding so the glob applies the expected mode.",
-        );
-    }
-
-    public function testLoadReadsExternalManifestRelativeToProviderRoot(): void
-    {
-        $this->seedFile('src/Foo.php');
-
-        $manifest = ['copy' => ['src']];
-
-        file_put_contents("{$this->tempDir}/scaffold.json", (string) json_encode($manifest));
-
-        $package = self::createStub(PackageInterface::class);
-
-        $package
-            ->method('getExtra')
-            ->willReturn(['scaffold' => ['manifest' => 'scaffold.json']]);
-        $package->method('getName')->willReturn('pkg/example');
-
-        $result = $this->loader()->load($package, $this->tempDir);
-
-        self::assertCount(
-            1,
-            $result,
-            'External manifest must produce mappings identical to an equivalent inline declaration.',
-        );
-    }
-
-    public function testLoadReturnsEmptyWhenExtraDoesNotDeclareScaffold(): void
-    {
-        $package = self::createStub(PackageInterface::class);
-
-        $package->method('getExtra')->willReturn([]);
-
-        self::assertSame(
-            [],
-            $this->loader()->load($package, $this->tempDir),
-            'Absence of the "scaffold" key must produce no mappings.',
-        );
-    }
-
-    public function testLoadReturnsEmptyWhenScaffoldIsNotArray(): void
-    {
-        $package = self::createStub(PackageInterface::class);
-
-        $package->method('getExtra')->willReturn(['scaffold' => 'invalid']);
-
-        self::assertSame(
-            [],
-            $this->loader()->load($package, $this->tempDir),
-            'Non-array "scaffold" value must produce no mappings.',
-        );
-    }
-
-    public function testLoadThrowsWhenExternalManifestCannotBeRead(): void
-    {
-        // Forces 'file_get_contents' to 'false' to cover the race where 'is_file()' succeeds but reading then fails.
-        $manifestPath = "{$this->tempDir}/scaffold.json";
-
-        file_put_contents($manifestPath, '{}');
-
-        MockerState::addCondition(
-            'PHPForge\\Scaffold\\Manifest',
-            'file_get_contents',
-            [$manifestPath, false, null, 0, null],
-            false,
-        );
-
-        $package = self::createStub(PackageInterface::class);
-
-        $package->method('getExtra')->willReturn(['scaffold' => ['manifest' => 'scaffold.json']]);
-        $package->method('getName')->willReturn('pkg/unreadable');
-
-        $this->expectException(RuntimeException::class);
-        $this->expectExceptionMessage('could not read manifest file');
-
-        $this->loader()->load($package, $this->tempDir);
-    }
-
-    public function testLoadThrowsWhenExternalManifestDecodesToNonObject(): void
-    {
-        file_put_contents("{$this->tempDir}/scaffold.json", '"just-a-string"');
-
-        $package = self::createStub(PackageInterface::class);
-
-        $package->method('getExtra')->willReturn(['scaffold' => ['manifest' => 'scaffold.json']]);
-        $package->method('getName')->willReturn('pkg/bad');
-
-        $this->expectException(RuntimeException::class);
-        $this->expectExceptionMessage('decode to an object');
-
-        $this->loader()->load($package, $this->tempDir);
-    }
-
-    public function testLoadThrowsWhenExternalManifestFileIsMissing(): void
-    {
-        $package = self::createStub(PackageInterface::class);
-
-        $package->method('getExtra')->willReturn(['scaffold' => ['manifest' => 'missing.json']]);
-        $package->method('getName')->willReturn('pkg/bad');
-
-        $this->expectException(RuntimeException::class);
-        $this->expectExceptionMessage('manifest file not found');
-
-        $this->loader()->load($package, $this->tempDir);
-    }
-
-    public function testLoadThrowsWhenExternalManifestJsonIsInvalid(): void
-    {
-        file_put_contents("{$this->tempDir}/scaffold.json", '{ not valid json ');
-
-        $package = self::createStub(PackageInterface::class);
-
-        $package->method('getExtra')->willReturn(['scaffold' => ['manifest' => 'scaffold.json']]);
-        $package->method('getName')->willReturn('pkg/bad');
-
-        $this->expectException(JsonException::class);
-
-        $this->loader()->load($package, $this->tempDir);
-    }
-
-    public function testLoadThrowsWhenExternalManifestPathContainsTraversal(): void
-    {
-        $package = self::createStub(PackageInterface::class);
-
-        $package->method('getExtra')->willReturn(['scaffold' => ['manifest' => '../escape.json']]);
-        $package->method('getName')->willReturn('pkg/bad');
-
-        $this->expectException(RuntimeException::class);
-        $this->expectExceptionMessage('relative path');
-
-        $this->loader()->load($package, $this->tempDir);
-    }
-
-    public function testLoadThrowsWhenExternalManifestPathIsAbsolute(): void
-    {
-        $package = self::createStub(PackageInterface::class);
-
-        $package->method('getExtra')->willReturn(['scaffold' => ['manifest' => '/etc/malicious.json']]);
-        $package->method('getName')->willReturn('pkg/bad');
-
-        $this->expectException(RuntimeException::class);
-        $this->expectExceptionMessage('relative path');
-
-        $this->loader()->load($package, $this->tempDir);
-    }
-
-    public function testLoadThrowsWhenExternalManifestPathIsAbsoluteWindowsBackslash(): void
-    {
-        $package = self::createStub(PackageInterface::class);
-
-        $package->method('getExtra')->willReturn(['scaffold' => ['manifest' => '\\Windows\\scaffold.json']]);
-        $package->method('getName')->willReturn('pkg/bad');
-
-        $this->expectException(RuntimeException::class);
-        $this->expectExceptionMessage('relative path');
-
-        $this->loader()->load($package, $this->tempDir);
-    }
-
-    public function testLoadThrowsWhenExternalManifestPathIsAbsoluteWindowsDrive(): void
-    {
-        $package = self::createStub(PackageInterface::class);
-
-        $package->method('getExtra')->willReturn(['scaffold' => ['manifest' => 'C:\\malicious.json']]);
-        $package->method('getName')->willReturn('pkg/bad');
-
-        $this->expectException(RuntimeException::class);
-        $this->expectExceptionMessage('relative path');
-
-        $this->loader()->load($package, $this->tempDir);
-    }
-
-    public function testLoadThrowsWhenExternalManifestPathIsEmptyString(): void
-    {
-        $package = self::createStub(PackageInterface::class);
-
-        $package->method('getExtra')->willReturn(['scaffold' => ['manifest' => '']]);
-        $package->method('getName')->willReturn('pkg/bad');
-
-        $this->expectException(RuntimeException::class);
-        $this->expectExceptionMessage('non-empty string');
-
-        $this->loader()->load($package, $this->tempDir);
-    }
-
-    public function testLoadThrowsWhenExternalManifestPathIsNotString(): void
-    {
-        $package = self::createStub(PackageInterface::class);
-
-        $package->method('getExtra')->willReturn(['scaffold' => ['manifest' => 42]]);
-        $package->method('getName')->willReturn('pkg/bad');
-
-        $this->expectException(RuntimeException::class);
-        $this->expectExceptionMessage('non-empty string');
-
-        $this->loader()->load($package, $this->tempDir);
-    }
-
-    public function testLoadThrowsWhenInlineManifestOmitsCopy(): void
-    {
-        $package = self::createStub(PackageInterface::class);
-
-        $package->method('getExtra')->willReturn(['scaffold' => ['modes' => ['*.php' => 'replace']]]);
-        $package->method('getName')->willReturn('pkg/bad');
-
-        $this->expectException(RuntimeException::class);
-        $this->expectExceptionMessage('"copy"');
-
-        $this->loader()->load($package, $this->tempDir);
-    }
-
-    protected function setUp(): void
-    {
-        $this->setUpTempDirectory();
-    }
-
-    protected function tearDown(): void
-    {
-        $this->tearDownTempDirectory();
     }
 
     /**
-     * Builds a {@see ManifestLoader} with real dependencies.
+     * Ensures a manifest reference with a colon past the drive-letter position is a relative path.
+     */
+    public function externalManifestPathMayHoldAColonPastTheDriveLetter(): void
+    {
+        $this->seed('src/Foo.php');
+        $this->seed('subdir/a:b.json', '{"copy": ["src"]}');
+
+        Assert::equals(
+            $this->loader()->loadFromExtra(
+                ['scaffold' => ['manifest' => 'subdir/a:b.json']],
+                'pkg/example',
+                $this->tempDir,
+            ),
+            [$this->mapping('src/Foo.php', 'src/Foo.php', FileMode::Replace, 'pkg/example')],
+            "Manifest 'subdir/a:b.json' must be read.",
+        );
+    }
+
+    /**
+     * Ensures a provider `composer.json` without a `scaffold` object yields no mappings.
+     */
+    #[DataSet(['{}'], 'no extra')]
+    #[DataSet(['{"extra": "text"}'], 'extra not an object')]
+    #[DataSet(['{"extra": {"scaffold": "invalid"}}'], 'scaffold not an object')]
+    public function loadFromPathYieldsNothingWithoutAScaffoldObject(string $composerJson): void
+    {
+        $this->seed('composer.json', $composerJson);
+
+        Assert::same(
+            $this->loader()->loadFromPath('p/a', $this->tempDir),
+            [],
+            "Package without a 'scaffold' object must yield no mappings.",
+        );
+    }
+
+    /**
+     * Ensures an empty, non-string, absolute or traversing manifest reference is rejected.
+     */
+    #[DataProvider(ManifestLoaderProvider::class . '::invalidReferences')]
+    public function throwRuntimeExceptionForInvalidReference(mixed $reference, Message $message): void
+    {
+        Expect::exception(RuntimeException::class)
+            ->withMessage(
+                $message->getMessage('pkg/bad'),
+            );
+
+        $this
+            ->loader()
+            ->loadFromExtra(['scaffold' => ['manifest' => $reference]], 'pkg/bad', $this->tempDir);
+    }
+
+    /**
+     * Ensures an external manifest body may not carry the consumer keys of the inline block.
+     */
+    public function throwRuntimeExceptionWhenExternalManifestDeclaresConsumerKey(): void
+    {
+        $this->seed('scaffold.json', '{"copy": ["src"], "allowed-packages": ["a/b"]}');
+
+        Expect::exception(RuntimeException::class)
+            ->withMessage(Message::MANIFEST_KEY_UNKNOWN->getMessage('allowed-packages', 'copy, exclude, merge, modes'));
+
+        $this
+            ->loader()
+            ->loadFromExtra(['scaffold' => ['manifest' => 'scaffold.json']], 'pkg/example', $this->tempDir);
+    }
+
+    /**
+     * Ensures an unreadable provider file is reported with the PHP warning.
+     */
+    #[DataSet(['composer.json'], 'composer.json')]
+    #[DataSet(['manifest file'], 'manifest file')]
+    public function throwRuntimeExceptionWhenProviderFileCannotBeRead(string $label): void
+    {
+        $path = $this->seedProviderFile($label, '{}');
+
+        $this->restrictFileAccess($path, 0o000);
+
+        Expect::exception(RuntimeException::class)
+            ->withMessage(
+                Message::FILESYSTEM_FAILED->getMessage(
+                    Message::MANIFEST_PROVIDER_FILE_UNREADABLE->getMessage('p/a', $label, $path),
+                    "file_get_contents({$path}): Failed to open stream: Permission denied",
+                ),
+            );
+
+        $this
+            ->loader()
+            ->loadFromPath('p/a', $this->tempDir);
+    }
+
+    /**
+     * Ensures a missing, non-object or invalid JSON provider file is rejected.
+     *
+     * @param string|null $content Content of the file, or `null` when it is missing.
+     * @param class-string<Exception> $exception Expected exception class.
+     * @param Message|string $message Message case rendered with the package, label and path, or the literal message.
+     */
+    #[DataProvider(ManifestLoaderProvider::class . '::decodeFailures')]
+    public function throwWhenProviderFileCannotBeDecoded(
+        string $label,
+        string|null $content,
+        string $exception,
+        Message|string $message,
+    ): void {
+        $path = $this->seedProviderFile($label, $content);
+
+        Expect::exception($exception)
+            ->withMessage($message instanceof Message ? $message->getMessage('p/a', $label, $path) : $message);
+
+        $this
+            ->loader()
+            ->loadFromPath('p/a', $this->tempDir);
+    }
+
+    /**
+     * Returns a manifest loader with the default schema and expander.
      */
     private function loader(): ManifestLoader
     {
@@ -373,14 +217,48 @@ final class ManifestLoaderTest extends TestCase
     }
 
     /**
-     * Writes an empty file at `$relative` under the temp directory, creating intermediate directories as needed.
+     * Returns the mapping of a file of the provider rooted at the temp directory.
      */
-    private function seedFile(string $relative): void
+    private function mapping(string $destination, string $source, FileMode $mode, string $provider): FileMapping
+    {
+        return new FileMapping($destination, $source, $mode, $provider, $this->tempDir);
+    }
+
+    /**
+     * Writes `$content` at `$relative` under the temp directory, creating intermediate directories as needed.
+     */
+    private function seed(string $relative, string $content = ''): void
     {
         $absolute = "{$this->tempDir}/{$relative}";
 
         $this->ensureTestDirectory(dirname($absolute));
 
-        file_put_contents($absolute, '');
+        file_put_contents(
+            $absolute,
+            $content,
+        );
+    }
+
+    /**
+     * Writes the provider `composer.json`, or the external manifest it names, and returns the path of that file.
+     *
+     * @param string $label `composer.json`, or `manifest file` for the external manifest.
+     * @param string|null $content Content of the file, or `null` to leave it missing.
+     *
+     * @return string Absolute path of the file.
+     */
+    private function seedProviderFile(string $label, string|null $content): string
+    {
+        $relative = $label === 'composer.json' ? 'composer.json' : 'scaffold.json';
+
+        if ($relative === 'scaffold.json') {
+            $this->seed('composer.json', '{"extra": {"scaffold": {"manifest": "scaffold.json"}}}');
+        }
+
+        if ($content !== null) {
+            $this->seed($relative, $content);
+        }
+
+        return "{$this->tempDir}/{$relative}";
     }
 }

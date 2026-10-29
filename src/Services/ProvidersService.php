@@ -4,13 +4,11 @@ declare(strict_types=1);
 
 namespace PHPForge\Scaffold\Services;
 
-use PHPForge\Scaffold\Console\{ExitCode, OutputWriter};
+use PHPForge\Scaffold\Console\{ExitCode, Message, OutputWriter, Table};
 use PHPForge\Scaffold\Scaffold\Lock\LockFile;
 
 use function array_fill_keys;
 use function array_keys;
-use function sprintf;
-use function str_repeat;
 
 /**
  * Lists scaffold providers recorded in `scaffold-lock.json` with their file counts.
@@ -18,9 +16,11 @@ use function str_repeat;
 final class ProvidersService
 {
     /**
-     * Returns the `provider-name => file-count` map derived from `scaffold-lock.json` under `$projectRoot`.
+     * Returns the number of tracked files of every provider recorded in `scaffold-lock.json` under `$projectRoot`.
      *
      * @param string $projectRoot Absolute path to the project root.
+     *
+     * @throws \RuntimeException when the lock file cannot be read.
      *
      * @return array<string, int> Map of provider package names to the number of files tracked for them.
      */
@@ -28,11 +28,7 @@ final class ProvidersService
     {
         $data = (new LockFile($projectRoot))->read();
 
-        /**
-         * Seed with every provider recorded in the lock's top-level map so providers with zero tracked files
-         * (for example, `append` / `prepend`-only providers scaffolded but not yet registered) still appear in the
-         * listing.
-         */
+        // Providers whose manifests produced no tracked files still appear, with a count of zero.
         $providers = array_fill_keys(array_keys($data['providers']), 0);
 
         foreach ($data['files'] as $entry) {
@@ -49,6 +45,8 @@ final class ProvidersService
      * @param string $projectRoot Absolute path to the project root directory.
      * @param OutputWriter $out Output sink used for stdout writes.
      *
+     * @throws \RuntimeException when the lock file cannot be read.
+     *
      * @return int `0` on success.
      */
     public function run(string $projectRoot, OutputWriter $out): int
@@ -56,16 +54,23 @@ final class ProvidersService
         $providers = $this->getProviders($projectRoot);
 
         if ($providers === []) {
-            $out->writeStdout('[scaffold] No providers tracked in scaffold-lock.json.');
+            $out->writeStdout(
+                Message::PROVIDERS_NONE->getMessage(),
+            );
 
             return ExitCode::Ok->value;
         }
 
-        $out->writeStdout(sprintf('%-44s %s', 'Provider', 'Files'));
-        $out->writeStdout(str_repeat('-', 52));
+        $rows = [];
 
         foreach ($providers as $name => $count) {
-            $out->writeStdout(sprintf('%-44s %d', $name, $count));
+            $rows[] = [$name, (string) $count];
+        }
+
+        foreach (Table::render(['Provider', 'Files'], $rows) as $line) {
+            $out->writeStdout(
+                $line,
+            );
         }
 
         return ExitCode::Ok->value;

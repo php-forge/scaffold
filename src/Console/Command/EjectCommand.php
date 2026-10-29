@@ -7,47 +7,50 @@ namespace PHPForge\Scaffold\Console\Command;
 use PHPForge\Scaffold\Console\SymfonyOutputWriter;
 use PHPForge\Scaffold\Services\EjectService;
 use Symfony\Component\Console\Attribute\AsCommand;
-use Symfony\Component\Console\Command\Command;
 use Symfony\Component\Console\Input\{InputArgument, InputInterface, InputOption};
-use Symfony\Component\Console\Output\OutputInterface;
 
 /**
- * Removes a file entry from `scaffold-lock.json` without deleting the file from disk.
- *
- * Usage example:
- * ```bash
- * vendor/bin/scaffold eject config/params.php --yes
- * ```
+ * Marks a file as ejected in `scaffold-lock.json` so scaffold stops managing it, without deleting it from disk.
  */
 #[AsCommand(
     name: 'eject',
-    description: "Removes a file entry from 'scaffold-lock.json' without deleting the file from disk.",
+    description: "Marks a file as ejected in 'scaffold-lock.json' so scaffold stops managing it; it stays on disk.",
 )]
 final class EjectCommand extends AbstractScaffoldCommand
 {
+    /**
+     * Declares the `file` argument and the `--yes` option.
+     */
     protected function configure(): void
     {
         $this
-            ->addArgument('file', InputArgument::REQUIRED, "Destination path as recorded in 'scaffold-lock.json'.")
-            ->addOption('yes', null, InputOption::VALUE_NONE, 'Confirm the ejection without prompting.');
+            ->addArgument(
+                'file',
+                InputArgument::REQUIRED,
+                "Destination path as recorded in 'scaffold-lock.json'.",
+            )
+            ->addOption(
+                'yes',
+                null,
+                InputOption::VALUE_NONE,
+                'Confirm the ejection without prompting.',
+            );
     }
 
-    protected function execute(InputInterface $input, OutputInterface $output): int
+    /**
+     * Ejects the given file, or previews the ejection without `--yes`.
+     *
+     * @param InputInterface $input Input with the `file` argument and the `--yes` option.
+     * @param SymfonyOutputWriter $out Output sink that receives the ejection notice and the error messages.
+     * @param string $projectRoot Absolute path of the project root.
+     *
+     * @return int Exit code of {@see EjectService::run()}.
+     */
+    protected function handle(InputInterface $input, SymfonyOutputWriter $out, string $projectRoot): int
     {
-        $projectRoot = $this->resolveProjectRoot($output);
-
-        if ($projectRoot === null) {
-            return Command::FAILURE;
-        }
-
         /** @var string $file */
         $file = $input->getArgument('file');
 
-        return (new EjectService())->run(
-            $projectRoot,
-            $file,
-            (bool) $input->getOption('yes'),
-            new SymfonyOutputWriter($output),
-        );
+        return (new EjectService())->run($projectRoot, $out, $file, (bool) $input->getOption('yes'));
     }
 }

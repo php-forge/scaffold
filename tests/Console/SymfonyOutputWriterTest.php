@@ -5,92 +5,54 @@ declare(strict_types=1);
 namespace PHPForge\Scaffold\Tests\Console;
 
 use PHPForge\Scaffold\Console\SymfonyOutputWriter;
-use PHPUnit\Framework\Attributes\Group;
-use PHPUnit\Framework\TestCase;
-use Symfony\Component\Console\Output\BufferedOutput;
-use Symfony\Component\Console\Output\ConsoleOutput;
-use Symfony\Component\Console\Output\OutputInterface;
+use PHPForge\Scaffold\Tests\Provider\SymfonyOutputWriterProvider;
+use Symfony\Component\Console\Output\{BufferedOutput, ConsoleOutput, OutputInterface};
+use Testo\Assert;
+use Testo\Codecov\Covers;
+use Testo\Data\DataProvider;
+use Testo\Test;
 
 /**
- * Unit tests for {@see SymfonyOutputWriter} verifying that stdout / stderr writes bypass Symfony's output formatter so
- * pre-formatted service messages (for example, diffs that contain angle-bracket tokens) land verbatim.
+ * Unit tests for {@see SymfonyOutputWriter} verifying that stdout and stderr writes bypass Symfony's output formatter,
+ * so pre-formatted service messages (for example, diffs that contain angle-bracket tokens) land verbatim.
+ *
+ * {@see SymfonyOutputWriterProvider} for test case data providers.
  */
-#[Group('scaffold')]
-#[Group('console')]
-final class SymfonyOutputWriterTest extends TestCase
+#[Test]
+#[Covers(SymfonyOutputWriter::class)]
+final class SymfonyOutputWriterTest
 {
-    public function testWriteStderrFallsBackToPrimaryOutputWhenNotConsoleOutputInterface(): void
-    {
-        $output = new BufferedOutput();
-
-        (new SymfonyOutputWriter($output))->writeStderr('plain <output> fallback');
-
-        self::assertSame(
-            'plain <output> fallback' . PHP_EOL,
-            $output->fetch(),
-            "Without 'ConsoleOutputInterface', stderr writes must fall back to the primary output with a trailing newline.",
-        );
-    }
-
-    public function testWriteStderrRoutesThroughErrorOutputOfConsoleOutputInterface(): void
-    {
-        $console = new ConsoleOutput();
-
-        self::assertInstanceOf(
-            BufferedOutput::class,
-            $this->overrideErrorOutput($console),
-            'Test setup: the error output must be swapped for a BufferedOutput so we can read it back.',
-        );
-
-        (new SymfonyOutputWriter($console))->writeStderr('error <bold>line</bold>');
-
-        /** @var BufferedOutput $swapped */
-        $swapped = $console->getErrorOutput();
-
-        self::assertSame(
-            'error <bold>line</bold>' . PHP_EOL,
-            $swapped->fetch(),
-            "'writeStderr' must route through 'getErrorOutput()' and preserve angle-bracket tokens verbatim.",
-        );
-    }
-    public function testWriteStdoutEmitsAngleBracketTokensVerbatimWithoutFormatterInterpretation(): void
-    {
-        $output = new BufferedOutput();
-
-        (new SymfonyOutputWriter($output))->writeStdout('<?php echo $user; ?>');
-
-        self::assertSame(
-            '<?php echo $user; ?>' . PHP_EOL,
-            $output->fetch(),
-            'Angle-bracket tokens inside a stdout write must survive verbatim without Symfony formatter interpretation.',
-        );
-    }
-
-    public function testWriteStdoutEmitsSymfonyStyleTagsLiterallyWithoutApplyingAnsi(): void
-    {
-        $output = new BufferedOutput(OutputInterface::VERBOSITY_NORMAL, decorated: true);
-
-        (new SymfonyOutputWriter($output))->writeStdout('<info>hello</info>');
-
-        self::assertSame(
-            '<info>hello</info>' . PHP_EOL,
-            $output->fetch(),
-            'Symfony-style tags must be written literally (no ANSI codes) even when decoration is enabled.',
-        );
-    }
-
     /**
-     * Overrides the error output of a ConsoleOutput instance with a BufferedOutput for testing purposes.
+     * Ensures the message lands verbatim with one trailing newline on the stream of the write method.
      *
-     * @param ConsoleOutput $console ConsoleOutput instance to modify.
-     *
-     * @return BufferedOutput BufferedOutput instance used as the new error output.
+     * @param string $method Write method under test, `writeStdout` or `writeStderr`.
+     * @param bool $console Whether the writer wraps a console output whose error output is the buffer.
+     * @param bool $decorated Whether the buffer is decorated.
      */
-    private function overrideErrorOutput(ConsoleOutput $console): BufferedOutput
+    #[DataProvider(SymfonyOutputWriterProvider::class . '::writes')]
+    public function writesTheMessageVerbatim(string $method, bool $console, bool $decorated, string $message): void
     {
-        $buffered = new BufferedOutput();
-        $console->setErrorOutput($buffered);
+        $buffer = new BufferedOutput(OutputInterface::VERBOSITY_NORMAL, $decorated);
 
-        return $buffered;
+        $output = $buffer;
+
+        if ($console) {
+            $output = new ConsoleOutput();
+
+            $output->setErrorOutput($buffer);
+        }
+
+        $writer = new SymfonyOutputWriter($output);
+
+        match ($method) {
+            'writeStderr' => $writer->writeStderr($message),
+            default => $writer->writeStdout($message),
+        };
+
+        Assert::same(
+            $buffer->fetch(),
+            $message . PHP_EOL,
+            "Message must land verbatim on the '{$method}' stream.",
+        );
     }
 }

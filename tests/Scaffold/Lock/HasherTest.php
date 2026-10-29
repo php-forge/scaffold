@@ -4,162 +4,87 @@ declare(strict_types=1);
 
 namespace PHPForge\Scaffold\Tests\Scaffold\Lock;
 
+use PHPForge\Scaffold\Exception\Message;
 use PHPForge\Scaffold\Scaffold\Lock\Hasher;
 use PHPForge\Scaffold\Tests\Support\TempDirectoryTrait;
-use PHPUnit\Framework\Attributes\Group;
-use PHPUnit\Framework\TestCase;
 use RuntimeException;
-use Xepozz\InternalMocker\MockerState;
+use Testo\Assert;
+use Testo\Codecov\Covers;
+use Testo\Data\DataSet;
+use Testo\Expect;
+use Testo\Test;
 
-use function strlen;
+use function file_put_contents;
 
 /**
  * Unit tests for {@see Hasher} file hash computation.
  */
-#[Group('scaffold')]
-#[Group('lock')]
-final class HasherTest extends TestCase
+#[Test]
+#[Covers(Hasher::class)]
+final class HasherTest
 {
     use TempDirectoryTrait;
 
-    public function testEqualsIsCaseSensitive(): void
+    #[DataSet(['hello', 'sha256:2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824'], 'content')]
+    #[DataSet(['', 'sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855'], 'empty file')]
+    public function hashReturnsPrefixedSha256Digest(string $content, string $expected): void
     {
-        self::assertFalse(
-            (new Hasher())->equals('sha256:ABC', 'sha256:abc'),
-            'Hash comparison should be case-sensitive',
+        file_put_contents(
+            "{$this->tempDir}/file.txt",
+            $content,
+        );
+
+        Assert::same(
+            Hasher::hash("{$this->tempDir}/file.txt"),
+            $expected,
+            'Hash must be the prefixed SHA-256 digest.',
         );
     }
 
-    public function testEqualsReturnsFalseForDifferentHashes(): void
+    public function throwRuntimeExceptionWhenFileIsMissing(): void
     {
-        self::assertFalse(
-            (new Hasher())->equals('sha256:abc', 'sha256:xyz'),
-            'Hash comparison should return false for different hashes',
-        );
+        $file = "{$this->tempDir}/nonexistent.txt";
+
+        Expect::exception(RuntimeException::class)
+            ->withMessage(
+                Message::FILESYSTEM_FAILED->getMessage(
+                    Message::LOCK_HASH_FAILED->getMessage($file),
+                    "hash_file({$file}): Failed to open stream: No such file or directory",
+                ),
+            );
+
+        Hasher::hash($file);
     }
 
-    public function testEqualsReturnsTrueForIdenticalHashes(): void
-    {
-        self::assertTrue(
-            (new Hasher())->equals('sha256:abc', 'sha256:abc'),
-            'Hash comparison should return true for identical hashes',
-        );
-    }
-
-    public function testHashDiffersAfterContentChange(): void
-    {
-        $file = "{$this->tempDir}/file.txt";
-
-        file_put_contents($file, 'original');
-
-        $hasher = new Hasher();
-
-        $before = $hasher->hash($file);
-
-        file_put_contents($file, 'modified');
-
-        self::assertNotSame(
-            $before,
-            $hasher->hash($file),
-            'Hash should differ after file content changes',
-        );
-    }
-
-    public function testHashOfNonExistentFileThrows(): void
-    {
-        $this->expectException(RuntimeException::class);
-
-        (new Hasher())->hash("{$this->tempDir}/nonexistent.txt");
-    }
-
-    public function testHashOfSameContentIsIdempotent(): void
-    {
-        $file = "{$this->tempDir}/file.txt";
-
-        file_put_contents($file, 'deterministic content');
-
-        $hasher = new Hasher();
-
-        self::assertSame(
-            $hasher->hash($file),
-            $hasher->hash($file),
-            'Hash should be idempotent for the same content',
-        );
-    }
-
-    public function testHashReturnsSha256PrefixedString(): void
-    {
-        $file = $this->tempDir . '/file.txt';
-
-        file_put_contents($file, 'hello');
-
-        $hash = (new Hasher())->hash($file);
-
-        self::assertStringStartsWith(
-            'sha256:',
-            $hash,
-            "Hash should start with 'sha256:' prefix",
-        );
-        // 'sha256:' (7) + 64 hex chars
-        self::assertSame(
-            7 + 64,
-            strlen($hash),
-            "Hash length should be '71' characters",
-        );
-    }
-
-    public function testHashThrowsWhenFileExistsButIsUnreadable(): void
+    public function throwRuntimeExceptionWhenFileIsUnreadable(): void
     {
         $file = "{$this->tempDir}/unreadable.txt";
 
-        file_put_contents($file, 'content');
-
-        // Force `is_readable()` inside the Lock namespace to report false while the file still exists.
-        MockerState::addCondition(
-            'PHPForge\\Scaffold\\Scaffold\\Lock',
-            'is_readable',
-            [$file],
-            false,
+        file_put_contents(
+            $file,
+            'content',
         );
 
-        $this->expectException(RuntimeException::class);
-        $this->expectExceptionMessage('file is unreadable or does not exist');
+        $this->restrictFileAccess($file, 0o000);
 
-        (new Hasher())->hash($file);
+        Expect::exception(RuntimeException::class)
+            ->withMessage(
+                Message::FILESYSTEM_FAILED->getMessage(
+                    Message::LOCK_HASH_FAILED->getMessage($file),
+                    "hash_file({$file}): Failed to open stream: Permission denied",
+                ),
+            );
+
+        Hasher::hash($file);
     }
 
-    public function testHashThrowsWhenHashFileReturnsFalse(): void
+    public function throwRuntimeExceptionWhenPathIsADirectory(): void
     {
-        $file = "{$this->tempDir}/broken-hash.txt";
+        Expect::exception(RuntimeException::class)
+            ->withMessageContaining(
+                Message::LOCK_HASH_FAILED->getMessage($this->tempDir) . ' Reason: hash_file(',
+            );
 
-        file_put_contents($file, 'content');
-
-        // Real file is readable; force `hash_file()` itself to report false to hit the post-read failure branch.
-        MockerState::addCondition(
-            'PHPForge\\Scaffold\\Scaffold\\Lock',
-            'hash_file',
-            [
-                'sha256',
-                $file,
-                false,
-                [],
-            ],
-            false,
-        );
-
-        $this->expectException(RuntimeException::class);
-        $this->expectExceptionMessage('file is unreadable or does not exist');
-
-        (new Hasher())->hash($file);
-    }
-
-    protected function setUp(): void
-    {
-        $this->setUpTempDirectory();
-    }
-
-    protected function tearDown(): void
-    {
-        $this->tearDownTempDirectory();
+        Hasher::hash($this->tempDir);
     }
 }

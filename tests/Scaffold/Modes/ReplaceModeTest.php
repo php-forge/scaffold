@@ -5,294 +5,59 @@ declare(strict_types=1);
 namespace PHPForge\Scaffold\Tests\Scaffold\Modes;
 
 use PHPForge\Scaffold\Manifest\{FileMapping, FileMode};
-use PHPForge\Scaffold\Scaffold\Lock\Hasher;
 use PHPForge\Scaffold\Scaffold\Modes\{ApplyOutcome, ReplaceMode};
-use PHPForge\Scaffold\Tests\Support\TempDirectoryTrait;
-use PHPUnit\Framework\TestCase;
-use RuntimeException;
-use Xepozz\InternalMocker\MockerState;
+use PHPForge\Scaffold\Tests\Provider\ModeProvider;
+use PHPForge\Scaffold\Tests\Support\{InspectionProject, TempDirectoryTrait};
+use Testo\Assert;
+use Testo\Codecov\Covers;
+use Testo\Data\DataProvider;
+use Testo\Test;
+
+use function file_get_contents;
 
 /**
- * Unit tests for {@see ReplaceMode} scaffold file application strategy.
+ * Unit tests for {@see ReplaceMode} overwriting an existing destination unless the user modified it.
+ *
+ * The shared mode behavior lives in {@see ModeContractTest}.
+ *
+ * {@see ModeProvider} for test case data providers.
  */
-final class ReplaceModeTest extends TestCase
+#[Test]
+#[Covers(ReplaceMode::class)]
+final class ReplaceModeTest
 {
     use TempDirectoryTrait;
 
-    public function testCreatesIntermediateDirectories(): void
-    {
-        $this->makeSourceFile(relative: 'stubs/nested/deep.txt');
+    #[DataProvider(ModeProvider::class . '::replaceDecisions')]
+    public function appliesExistingDestinationAgainstLockHash(
+        string|null $lockHash,
+        string $existing,
+        string $stub,
+        ApplyOutcome $outcome,
+        string $content,
+        string $newHash,
+        string|null $warning,
+    ): void {
+        (new InspectionProject($this->tempDir))
+            ->stub('p/a', 'output.txt', $stub)
+            ->file('output.txt', $existing);
 
         $result = (new ReplaceMode())->apply(
-            $this->makeMapping('a/b/c/deep.txt', 'stubs/nested/deep.txt'),
-            "{$this->tempDir}/project",
-            new Hasher(),
-            null,
-        );
-
-        self::assertSame(
-            ApplyOutcome::Written,
-            $result->outcome,
-            'Expected file to be written successfully, even if intermediate directories do not exist.',
-        );
-        self::assertFileExists(
-            "{$this->tempDir}/project/a/b/c/deep.txt",
-            'Expected file to exist after creating intermediate directories.',
-        );
-    }
-
-    public function testOverwritesFileWhenHashMatchesLockHash(): void
-    {
-        $projectDir = "{$this->tempDir}/project";
-
-        mkdir($projectDir, 0o777, recursive: true);
-        file_put_contents($projectDir . '/output.txt', 'original scaffold content');
-
-        $this->makeSourceFile('updated stub content');
-
-        $hasher = new Hasher();
-
-        $lockHash = $hasher->hash($projectDir . '/output.txt');
-
-        $result = (new ReplaceMode())->apply(
-            $this->makeMapping(),
-            $projectDir,
-            $hasher,
+            new FileMapping(
+                'output.txt',
+                'stubs/output.txt',
+                FileMode::Replace,
+                'p/a',
+                "{$this->tempDir}/vendor/p/a",
+            ),
+            $this->tempDir,
             $lockHash,
         );
 
-        self::assertSame(
-            ApplyOutcome::Written,
-            $result->outcome,
-            'Expected file to be overwritten when hash matches lock hash.',
+        Assert::same(
+            [$result->outcome, file_get_contents("{$this->tempDir}/output.txt"), $result->newHash, $result->warning],
+            [$outcome, $content, $newHash, $warning],
+            'Outcome, content, new hash and warning must match the decision.',
         );
-        self::assertSame(
-            'updated stub content',
-            file_get_contents($projectDir . '/output.txt'),
-            'Expected file content to be updated when hash matches lock hash.',
-        );
-    }
-
-    public function testResultHashMatchesActualFileHash(): void
-    {
-        $this->makeSourceFile('known content');
-
-        $hasher = new Hasher();
-        $result = (new ReplaceMode())->apply(
-            $this->makeMapping(),
-            "{$this->tempDir}/project",
-            $hasher,
-            null,
-        );
-
-        $actualHash = $hasher->hash("{$this->tempDir}/project/output.txt");
-
-        self::assertSame(
-            $actualHash,
-            $result->newHash,
-            'Expected result hash to match the actual file hash.',
-        );
-    }
-
-    public function testSkipsFileWhenUserHasModifiedIt(): void
-    {
-        $projectDir = "{$this->tempDir}/project";
-
-        mkdir($projectDir, 0o777, recursive: true);
-        file_put_contents($projectDir . '/output.txt', 'original scaffold content');
-
-        $this->makeSourceFile('updated stub content');
-
-        $hasher = new Hasher();
-
-        // Lock hash recorded for original; user then modified the file to different content.
-        $lockHash = 'sha256:' . hash('sha256', 'the-original-hash-that-no-longer-matches');
-
-        $result = (new ReplaceMode())->apply(
-            $this->makeMapping(),
-            $projectDir,
-            $hasher,
-            $lockHash,
-        );
-
-        self::assertSame(
-            ApplyOutcome::Skipped,
-            $result->outcome,
-            'Expected file to be skipped when user has modified it.',
-        );
-        self::assertSame(
-            '',
-            $result->newHash,
-            'Expected new hash to be empty when file is skipped.',
-        );
-        self::assertNotNull(
-            $result->warning,
-            'Expected warning to be set when file is skipped.',
-        );
-        self::assertStringContainsString(
-            'output.txt',
-            $result->warning,
-            'Expected warning to mention the file name when file is skipped.',
-        );
-        // File must NOT be overwritten.
-        self::assertSame(
-            'original scaffold content',
-            file_get_contents($projectDir . '/output.txt'),
-            'Expected file content to remain unchanged when file is skipped.',
-        );
-    }
-
-    public function testSyncsSourceExecutableBitOntoDestinationAfterCopy(): void
-    {
-        if (DIRECTORY_SEPARATOR === '\\') {
-            self::markTestSkipped('POSIX umask-based permissions do not apply to NTFS (Windows always reports 0777).');
-        }
-
-        $source = "{$this->tempDir}/provider/stubs/source.txt";
-
-        $this->makeSourceFile('#!/bin/sh');
-
-        chmod($source, 0o755);
-
-        $oldUmask = umask(0o022);
-
-        try {
-            (new ReplaceMode())->apply(
-                $this->makeMapping(),
-                "{$this->tempDir}/project",
-                new Hasher(),
-                null,
-            );
-
-            self::assertSame(
-                0o755,
-                fileperms("{$this->tempDir}/project/output.txt") & 0o777,
-                "After 'ReplaceMode::apply' copies the stub, 'syncPermissions' must propagate the source exec bit (0755).",
-            );
-        } finally {
-            umask($oldUmask);
-        }
-    }
-
-    public function testThrowsWhenCopyFails(): void
-    {
-        $this->makeSourceFile('content');
-
-        MockerState::addCondition(
-            'PHPForge\\Scaffold\\Scaffold\\Modes',
-            'copy',
-            [],
-            false,
-            default: true,
-        );
-
-        $this->expectException(RuntimeException::class);
-        $this->expectExceptionMessage('Could not copy');
-
-        (new ReplaceMode())->apply($this->makeMapping(), "{$this->tempDir}/project", new Hasher(), null);
-    }
-
-    public function testWritesFileWhenDestinationDoesNotExist(): void
-    {
-        $this->makeSourceFile();
-
-        $result = (new ReplaceMode())->apply(
-            $this->makeMapping(),
-            $this->tempDir . '/project',
-            new Hasher(),
-            null,
-        );
-
-        self::assertSame(
-            ApplyOutcome::Written,
-            $result->outcome,
-            'Expected file to be written when destination does not exist.',
-        );
-        self::assertStringStartsWith(
-            'sha256:',
-            $result->newHash,
-            "Expected new hash to start with 'sha256:'",
-        );
-        self::assertNull(
-            $result->warning,
-            'Expected no warning when file is written.',
-        );
-        self::assertFileExists(
-            "{$this->tempDir}/project/output.txt",
-            'Expected file to exist after being written.',
-        );
-    }
-
-    public function testWritesFileWhenNoLockHashExists(): void
-    {
-        $projectDir = "{$this->tempDir}/project";
-
-        mkdir($projectDir, 0o777, recursive: true);
-        file_put_contents($projectDir . '/output.txt', 'any existing content');
-
-        $this->makeSourceFile('fresh stub');
-
-        $result = (new ReplaceMode())->apply(
-            $this->makeMapping(),
-            $projectDir,
-            new Hasher(),
-            null, // No lock hash treat as untracked, overwrite unconditionally.
-        );
-
-        self::assertSame(
-            ApplyOutcome::Written,
-            $result->outcome,
-            'Expected file to be written when no lock hash exists.',
-        );
-        self::assertSame(
-            'fresh stub',
-            file_get_contents($projectDir . '/output.txt'),
-            'Expected file content to match the source when no lock hash exists.',
-        );
-    }
-
-    protected function setUp(): void
-    {
-        $this->setUpTempDirectory();
-    }
-
-    protected function tearDown(): void
-    {
-        $this->tearDownTempDirectory();
-    }
-
-    /**
-     * Helper to create a FileMapping for testing.
-     *
-     * @param string $destination Relative destination path within the project, defaulting to 'output.txt'.
-     * @param string $source Relative source path within the provider, defaulting to 'stubs/source.txt'.
-     *
-     * @return FileMapping Created FileMapping instance.
-     */
-    private function makeMapping(string $destination = 'output.txt', string $source = 'stubs/source.txt'): FileMapping
-    {
-        return new FileMapping(
-            destination: $destination,
-            source: $source,
-            mode: FileMode::Replace,
-            providerName: 'test/provider',
-            providerPath: "{$this->tempDir}/provider",
-        );
-    }
-
-    /**
-     * Helper to create a source file for testing.
-     *
-     * @param string $content Content to write to the source file, defaulting to 'stub content'.
-     * @param string $relative Relative path of the source file within the provider directory, defaulting to
-     * 'stubs/source.txt'.
-     */
-    private function makeSourceFile(string $content = 'stub content', string $relative = 'stubs/source.txt'): void
-    {
-        $path = "{$this->tempDir}/provider/{$relative}";
-
-        $this->ensureTestDirectory(dirname($path));
-
-        file_put_contents($path, $content);
     }
 }
