@@ -18,6 +18,8 @@ use function is_string;
 final readonly class InstalledPackages
 {
     /**
+     * Creates an installed-package view from normalized Composer metadata.
+     *
      * @param array<string, array{version: string|null, path: string|null}>|null $packages Installed packages keyed by
      * name, with their pretty version and absolute install path, or `null` when the installed packages are unknown.
      */

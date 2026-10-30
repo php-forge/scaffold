@@ -17,6 +17,8 @@ use function preg_replace;
 final readonly class ApplyPreview
 {
     /**
+     * Creates a preview of applying a provider mapping.
+     *
      * @param FileMapping $mapping Mapping that would be applied.
      * @param bool $exists Whether the destination exists on disk.
      * @param string $current Destination content on disk; an empty string when the destination does not exist.

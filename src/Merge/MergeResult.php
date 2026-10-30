@@ -10,6 +10,8 @@ namespace PHPForge\Scaffold\Merge;
 final readonly class MergeResult
 {
     /**
+     * Creates the result of a merge operation.
+     *
      * @param string $content Merged content; byte-identical to the consumer when `$changed` is `false`.
      * @param bool $changed Whether `$content` differs from the consumer content.
      */

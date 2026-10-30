@@ -36,13 +36,13 @@ abstract class AbstractScaffoldCommand extends Command
     abstract protected function handle(InputInterface $input, SymfonyOutputWriter $out, string $projectRoot): int;
 
     /**
-     * Validates the input, resolves the project root and runs {@see self::handle()}.
+     * Validates the input, resolves the project root and runs {@see AbstractScaffoldCommand::handle()}.
      *
      * @param InputInterface $input Command input that may carry the global `--working-dir` option.
      * @param OutputInterface $output Console output that receives the command output and the error messages.
      *
-     * @return int Exit code of {@see self::handle()}; `1` when the project root is not found or a runtime error is
-     * reported; `2` when the input is invalid.
+     * @return int Exit code of {@see AbstractScaffoldCommand::handle()}; `1` when the project root is not found or a
+     * runtime error is reported; `2` when the input is invalid.
      */
     final protected function execute(InputInterface $input, OutputInterface $output): int
     {

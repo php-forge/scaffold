@@ -13,6 +13,8 @@ use Symfony\Component\Console\Output\{ConsoleOutputInterface, OutputInterface};
 final readonly class SymfonyOutputWriter implements OutputWriter
 {
     /**
+     * Creates a writer for a Symfony Console output.
+     *
      * @param OutputInterface $output Console output that receives the messages and, through its error output when it
      * is a {@see \Symfony\Component\Console\Output\ConsoleOutputInterface}, the standard error messages.
      */

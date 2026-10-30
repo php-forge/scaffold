@@ -12,6 +12,8 @@ use Composer\IO\IOInterface;
 final readonly class ComposerIoWriter implements OutputWriter
 {
     /**
+     * Creates a writer for Composer IO.
+     *
      * @param IOInterface $io Composer IO that receives the messages.
      */
     public function __construct(private IOInterface $io) {}

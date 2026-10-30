@@ -18,6 +18,8 @@ use function is_string;
 final readonly class ProjectContext
 {
     /**
+     * Creates a project context from its resolved filesystem and Composer metadata.
+     *
      * @param string $projectRoot Absolute path to the project root.
      * @param string $vendorDir Absolute path to the Composer vendor directory.
      * @param ProjectConfig $config Consumer settings from the project `composer.json`.

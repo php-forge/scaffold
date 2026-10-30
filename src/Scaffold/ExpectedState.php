@@ -28,6 +28,8 @@ final readonly class ExpectedState
     private const int ORPHAN_LIST_LIMIT = 10;
 
     /**
+     * Creates an expected state from merged mappings and provider diagnostics.
+     *
      * @param array<array-key, FileMapping> $mappings Expected mappings keyed by destination.
      * @param list<string> $failedProviders Allowed and installed providers whose manifest could not be loaded.
      * @param list<string> $warnings Messages about provider roots and manifests, prefixed with `[scaffold]`.
