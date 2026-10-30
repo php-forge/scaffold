@@ -21,7 +21,7 @@ use function json_decode;
 final readonly class ProjectConfig
 {
     /**
-     * Creates consumer settings from normalized scaffold and vendor-directory values.
+     * Creates consumer settings from scaffold configuration and the configured vendor-directory value.
      *
      * @param list<string> $allowedPackages Package names allowed to write scaffold files, in declaration order.
      * @param bool $auto Whether the Composer hooks scaffold automatically.
