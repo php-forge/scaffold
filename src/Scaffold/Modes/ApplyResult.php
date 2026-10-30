@@ -10,6 +10,8 @@ namespace PHPForge\Scaffold\Scaffold\Modes;
 final readonly class ApplyResult
 {
     /**
+     * Creates the result of applying a file mapping.
+     *
      * @param ApplyOutcome $outcome Whether the destination was written or left unchanged.
      * @param string $newHash Hash of the destination after the operation, or an empty string when a user-modified
      * destination was skipped.

@@ -10,6 +10,8 @@ namespace PHPForge\Scaffold\Config;
 final readonly class ProviderPackage
 {
     /**
+     * Creates an installed provider descriptor.
+     *
      * @param string $name Composer package name.
      * @param string $prettyVersion Installed version recorded in `scaffold-lock.json`.
      * @param string|null $installPath Absolute install path, or `null` for a package without files, such as a

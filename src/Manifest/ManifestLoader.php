@@ -21,6 +21,8 @@ use function json_decode;
 final readonly class ManifestLoader
 {
     /**
+     * Creates a loader with its schema validator and mapping expander.
+     *
      * @param ManifestSchema $schema Validates the manifest.
      * @param ManifestExpander $expander Expands the validated manifest into file mappings.
      */

@@ -17,6 +17,8 @@ use PHPForge\Scaffold\Scaffold\Lock\LockFile;
 final readonly class Scaffolder
 {
     /**
+     * Creates the Composer adapter for a scaffold run.
+     *
      * @param ManifestLoader $loader Loads provider manifests into file mappings.
      * @param FileApplier $applier Validates and applies each mapping.
      * @param LockFile $lockFile Lock file of the project.

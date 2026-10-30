@@ -19,6 +19,8 @@ use RuntimeException;
 final readonly class FileApplier
 {
     /**
+     * Creates an applier for validated provider mappings.
+     *
      * @param ProjectConfig $config Consumer settings that list the providers allowed to write files.
      * @param PathValidator $pathValidator Validates destinations and sources.
      * @param OutputWriter $out Output sink that receives mode warnings on stderr.

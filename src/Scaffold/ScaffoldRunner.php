@@ -46,6 +46,8 @@ final readonly class ScaffoldRunner
     private array $modes;
 
     /**
+     * Creates a runner and its mode implementations.
+     *
      * @param ManifestLoader $loader Loads provider manifests into file mappings.
      * @param FileApplier $applier Validates and applies each mapping.
      * @param LockFile $lockFile Lock file of the project.

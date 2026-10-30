@@ -12,6 +12,8 @@ use PHPForge\Scaffold\Merge\MergeStrategyKind;
 final readonly class FileMapping
 {
     /**
+     * Creates a provider file mapping.
+     *
      * @param string $destination Destination path relative to the project root, using forward slashes.
      * @param string $source Source path relative to the provider root, using forward slashes.
      * @param FileMode $mode Write mode applied to the destination.

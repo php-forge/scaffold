@@ -70,6 +70,8 @@ final class LockFile
     private array|null $unknownKeys = null;
 
     /**
+     * Creates a lock-file store for a project.
+     *
      * @param string $projectRoot Absolute path to the project root that holds `scaffold-lock.json`.
      */
     public function __construct(private readonly string $projectRoot) {}
